@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+pydantic
+chromadb
+sentence-transformers
+groq
+google-generativeai
+cohere
+mistralai
+together
+edge-tts
+python-multipart
