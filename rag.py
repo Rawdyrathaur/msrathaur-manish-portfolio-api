@@ -1,25 +1,66 @@
-import os
 import glob
+import json
 import logging
+import os
+import time
+from pathlib import Path
+
 import chromadb
 from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────
-KNOWLEDGE_DIR   = "knowledge"        # folder with all .md files
-EMBED_MODEL     = "all-MiniLM-L6-v2" # small, fast, local — no API needed
-TOP_K           = 3                  # how many chunks to retrieve per query
+BASE_DIR        = Path(__file__).resolve().parent
+KNOWLEDGE_DIR   = BASE_DIR / "knowledge"  # folder with all .md files
+EMBED_MODEL     = "all-MiniLM-L6-v2"      # small, fast, local — no API needed
+TOP_K           = 3                       # how many chunks to retrieve per query
 COLLECTION_NAME = "manish_portfolio"
+CACHE_DIR       = Path(os.getenv("RAG_CACHE_DIR", "backend/.cache/rag"))
+PERSIST_DIR     = CACHE_DIR / "chroma"
+MANIFEST_PATH   = CACHE_DIR / "manifest.json"
 
 # ── Load model once at startup ────────────────────────────
 logger.info("Loading embedding model...")
+_embedder_start = time.perf_counter()
 _embedder = SentenceTransformer(EMBED_MODEL)
-logger.info("Embedding model loaded.")
+logger.info("Embedding model loaded in %.3fs.", time.perf_counter() - _embedder_start)
 
-# ── ChromaDB in-memory client ─────────────────────────────
-_client     = chromadb.Client()
+# ── ChromaDB persistent client ────────────────────────────
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_client     = chromadb.PersistentClient(path=str(PERSIST_DIR))
 _collection = _client.get_or_create_collection(COLLECTION_NAME)
+
+
+def _current_manifest() -> dict:
+    files = []
+    for path in sorted(KNOWLEDGE_DIR.glob("*.md")):
+        stat = path.stat()
+        files.append({
+            "name": path.name,
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+        })
+    return {
+        "schema_version": 1,
+        "collection_name": COLLECTION_NAME,
+        "embed_model": EMBED_MODEL,
+        "files": files,
+    }
+
+
+def _load_saved_manifest() -> dict | None:
+    if not MANIFEST_PATH.exists():
+        return None
+    try:
+        return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Could not read knowledge manifest: %s", exc)
+        return None
+
+
+def _save_manifest(manifest: dict) -> None:
+    MANIFEST_PATH.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
 
 
 # ══════════════════════════════════════════════════════════
@@ -69,10 +110,23 @@ def load_knowledge() -> int:
     chunks and embeds them, stores in ChromaDB.
     Returns total number of chunks loaded.
     """
-    md_files = sorted(glob.glob(os.path.join(KNOWLEDGE_DIR, "*.md")))
+    global _collection
+    load_start = time.perf_counter()
+    manifest = _current_manifest()
+    saved_manifest = _load_saved_manifest()
+
+    if saved_manifest == manifest:
+        existing_count = _collection.count()
+        if existing_count > 0:
+            logger.info("[RAG] Cache HIT - using existing Chroma collection")
+            logger.info("load_knowledge() finished in %.3fs with %d chunks.", time.perf_counter() - load_start, existing_count)
+            return existing_count
+
+    md_files = sorted(str(path) for path in KNOWLEDGE_DIR.glob("*.md"))
 
     if not md_files:
         logger.warning(f"No .md files found in '{KNOWLEDGE_DIR}/' folder.")
+        logger.info("load_knowledge() finished in %.3fs with 0 chunks.", time.perf_counter() - load_start)
         return 0
 
     all_chunks = []
@@ -86,10 +140,10 @@ def load_knowledge() -> int:
 
     if not all_chunks:
         logger.warning("No chunks found after parsing.")
+        logger.info("load_knowledge() finished in %.3fs with 0 chunks.", time.perf_counter() - load_start)
         return 0
 
     # Clear old data before reloading
-    global _collection
     try:
         _client.delete_collection(COLLECTION_NAME)
     except Exception:
@@ -102,6 +156,7 @@ def load_knowledge() -> int:
     sources   = [c["source"] for c in all_chunks]
     metadatas = [{"source": s} for s in sources]
 
+    logger.info("[RAG] Cache MISS - rebuilding embeddings")
     logger.info(f"Embedding {len(texts)} chunks...")
     embeddings = _embedder.encode(texts, show_progress_bar=False).tolist()
 
@@ -112,7 +167,10 @@ def load_knowledge() -> int:
         metadatas  = metadatas,
     )
 
+    _save_manifest(manifest)
+
     logger.info(f"Knowledge base ready — {len(all_chunks)} chunks indexed.")
+    logger.info("load_knowledge() finished in %.3fs with %d chunks.", time.perf_counter() - load_start, len(all_chunks))
     return len(all_chunks)
 
 

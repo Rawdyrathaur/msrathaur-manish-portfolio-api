@@ -9,7 +9,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -260,12 +260,15 @@ PROVIDERS = [
 ]
 
 def route_llm(msgs: list[dict]) -> tuple[str, str]:
+    route_start = time.perf_counter()
     for name, fn in PROVIDERS:
         logger.info(f"Trying provider: {name}")
         reply = fn(msgs)
         if reply:
             logger.info(f"✅ Success with: {name}")
+            logger.info("route_llm() finished in %.3fs via %s.", time.perf_counter() - route_start, name)
             return reply, name
+    logger.info("route_llm() finished in %.3fs with no provider success.", time.perf_counter() - route_start)
     raise HTTPException(
         status_code=503,
         detail="All LLM providers failed. Check your .env API keys.",
@@ -288,11 +291,16 @@ def health():
         if os.getenv(f"{name.upper()}_API_KEY")
     ]
     return {
-        "status":          "ok" if configured else "degraded",
+        "status": "ok" if configured else "degraded",
         "providers_ready": configured,
         "providers_total": len(PROVIDERS),
-        "rag":             "ready",
+        "rag": "ready",
     }
+
+
+@app.head("/health")
+def health_head():
+    return Response(status_code=200)
 
 
 @app.get("/providers")
