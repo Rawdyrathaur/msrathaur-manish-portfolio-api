@@ -284,8 +284,11 @@ def ping():
     return {"message": "Backend is alive!"}
 
 
-@app.get("/health")
-def health():
+@app.api_route("/health", methods=["GET", "HEAD"])
+def health(request: Request):
+    if request.method == "HEAD":
+        return Response(status_code=200)
+
     configured = [
         name for name, _ in PROVIDERS
         if os.getenv(f"{name.upper()}_API_KEY")
@@ -297,10 +300,6 @@ def health():
         "rag": "ready",
     }
 
-
-@app.head("/health")
-def health_head():
-    return Response(status_code=200)
 
 
 @app.get("/providers")
