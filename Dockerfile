@@ -14,6 +14,8 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 COPY --chown=user main.py .
 COPY --chown=user rag.py .
 COPY --chown=user system_prompt.py .
+COPY --chown=user intent_router.py .
+COPY --chown=user connectors/ ./connectors/
 COPY --chown=user knowledge/ ./knowledge/
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
