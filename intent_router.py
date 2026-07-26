@@ -43,7 +43,7 @@ def classify_intent(message: str, history: list = None) -> IntentType:
         # We pass a brief summary of history if available to help detect FOLLOW_UP
         history_context = ""
         if history and len(history) > 0:
-            last_msg = history[-1].get("content", "")[:100]
+            last_msg = history[-1].content[:100]
             history_context = f"Previous Assistant Message: {last_msg}\n\n"
             
         prompt = f"{history_context}User Message: {message}"
