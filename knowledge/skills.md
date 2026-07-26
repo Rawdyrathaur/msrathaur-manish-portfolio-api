@@ -1,28 +1,89 @@
-# Skills of Manish
+---
+title: "Skills"
+type: "skill"
+url: "/"
+---
+# Skills of Manish Singh Rathaur
 
 ## Quick Skills Summary
-Manish is a software developer skilled in Java, Python, Artificial Intelligence, and Machine Learning. Manish works with deep learning frameworks, automation testing tools, Android development, and modern web technologies. Manish is comfortable building practical projects and contributing to open-source software.
+Manish is a software developer skilled in Java, Python, distributed systems, AI/ML, and developer tooling. He has shipped a live Chrome extension with real users, built production-level microservices with Spring Boot and Kafka, and contributed to large-scale open-source Android applications. He is strongest in Java backend development and AI/ML, and is actively seeking a full-time role where he can apply these skills.
+
+---
 
 ## Programming Languages
-Manish works primarily with Java and Python for backend development and AI/ML implementation. Manish also has knowledge of HTML, CSS, JavaScript, and basic React for frontend development. Manish understands C, C++, and basic C# concepts. Manish mainly prefers Java and Python for building real-world applications.
+
+### Java (Primary — Strong)
+Java is Manish's strongest language. He built OmniSupport AI (six Spring Boot microservices), Carbon Pulse (three-service carbon tracker), and contributed to Organic Maps using Java 18. He is confident going deep on Java in technical interviews.
+
+### Python (Strong — AI/ML & Scripting)
+Manish uses Python extensively for AI/ML model development, backend scripting, and tooling. He built the RAG-powered backend for his own portfolio chatbot using Python (FastAPI, ChromaDB, SentenceTransformers). He also used Python for AI-related logic in Tab Story.
+
+### JavaScript (Comfortable — Frontend & Extensions)
+Manish built Tab Story, a published Chrome extension, entirely in JavaScript using Chrome Extension Manifest V3 and Chrome's Built-in AI API. He also has experience with React for frontend work (Carbon Pulse frontend was built in React).
+
+### Other Languages
+Manish has working knowledge of HTML, CSS, C, C++, and basic C#. His focus remains Java and Python for serious project work.
+
+---
+
+## Distributed Systems and Backend
+
+### Spring Boot and Microservices (Strong)
+Manish designed and built two multi-service Spring Boot systems from scratch:
+- OmniSupport AI: Six Spring Boot services with Kafka, JWT, PostgreSQL, Docker, and Eureka service discovery
+- Carbon Pulse: Three-service system with Spring Boot, Node.js, and React, validated with 50+ JUnit tests and circuit breaker patterns
+
+### Apache Kafka (Practical Experience)
+Manish implemented Kafka async message pipelines in OmniSupport AI to handle communication between services without tight coupling.
+
+### Docker and Containerization (Comfortable)
+Both major projects are containerized with Docker and Docker Compose. Manish can set up multi-service Docker Compose environments for full system orchestration.
+
+---
 
 ## Artificial Intelligence and Machine Learning
-Manish has experience working with PyTorch, TensorFlow, and Keras for deep learning model development. Manish has explored Generative Adversarial Networks, StyleGAN, and NVIDIA Imaginaire for generative AI projects. Manish has worked with Scikit-learn, XGBoost, LightGBM, CatBoost, and Statsmodels for machine learning tasks such as regression and predictive modeling. Manish uses these tools to build practical AI/ML solutions.
 
-## Web Development
-Manish has experience in frontend and backend web development. Manish has built multiple projects using HTML, CSS, JavaScript, and basic React. Manish understands how to structure web applications and integrate APIs. Manish focuses on practical implementation while continuously improving his frontend and backend skills.
+### Deep Learning Frameworks
+Manish has hands-on experience with PyTorch, TensorFlow, and Keras for deep learning model development. He has explored Generative Adversarial Networks, StyleGAN, and NVIDIA Imaginaire for generative AI experimentation.
 
-## Android and Mobile Development
-Manish has practical experience in Android development using Java. Manish contributed to the Organic Maps open-source project for approximately three to six months. Through this contribution, Manish improved his understanding of large-scale mobile application architecture and collaborative development workflows.
+### Classical Machine Learning
+Manish has worked with Scikit-learn, XGBoost, LightGBM, CatBoost, and Statsmodels for regression, classification, and predictive modeling tasks. He has a Kaggle profile where he applies these skills: https://www.kaggle.com/manishrathaur
+
+### RAG and AI Systems
+Manish built a full RAG (Retrieval-Augmented Generation) system for his portfolio chatbot using FastAPI, ChromaDB, SentenceTransformers, and multiple LLM providers (Groq, Gemini, Cohere, Mistral). This system is live at https://www.manishrathaur.tech/
+
+### Chrome Built-in AI API
+Manish used Chrome's on-device AI capabilities in Tab Story for local summarization and intent detection — zero external API calls, full user privacy.
+
+---
+
+## Android Development
+
+### Android with Java (Practical — Open Source)
+Manish contributed to Organic Maps, a production Android navigation app, using Java 18. He worked on feature improvements, bug fixes, and code quality improvements in a large real-world codebase.
+
+---
 
 ## Testing and Quality Assurance
-Manish has studied software testing and quality assurance for approximately two months with a strong focus on practical implementation. Manish has applied automation testing concepts in his own projects. Manish understands manual testing, test case design, and basic automation testing workflows.
 
-## Databases and Data Handling
-Manish has worked with SQL databases and MongoDB for structured and unstructured data storage. Manish has also explored Vector Databases and ChromaDB for AI-based retrieval systems. Manish understands database design, querying, and integration with backend applications.
+Manish has practical QA experience in two directions:
+1. Writing automated tests — Carbon Pulse was validated across 50+ JUnit test scenarios
+2. Manual QA and issue reporting — contributed to KubeStellar Console through bug hunting, workflow testing, and raising well-documented issues for maintainers
+
+---
+
+## Databases and Data Storage
+
+Manish has worked with PostgreSQL (used in OmniSupport AI), SQL databases, MongoDB for structured and unstructured data storage, and ChromaDB as a vector database for the portfolio RAG system.
+
+---
 
 ## Development Tools
-Manish regularly uses Git for version control and collaboration. Manish uses Visual Studio Code as his primary development environment. Manish is familiar with Docker and modern development workflows. Manish uses these tools daily while building projects and contributing to open-source software.
 
-## Skill Level Assessment
-Manish considers himself strong in Java development, Artificial Intelligence, Machine Learning, and automation testing. Manish is comfortable building backend systems and AI-based applications independently. Manish is continuously learning and improving his frontend and advanced system design skills.
+Manish regularly uses Git for version control, Visual Studio Code as his primary editor, Docker for containerization, and has experience with GitHub Actions for CI/CD automation.
+
+---
+
+## Self-Assessment
+
+Manish is most confident in Java backend development, Spring Boot microservices, Python AI/ML, and building complete product experiences from idea to deployment. He is actively improving his system design and advanced distributed systems knowledge.

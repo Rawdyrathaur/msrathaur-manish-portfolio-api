@@ -4,7 +4,8 @@ import time
 import logging
 import tempfile
 import asyncio
-import unicodedata
+import hmac
+import hashlib
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import List, Optional
@@ -15,11 +16,30 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# ── Local modules ─────────────────────────────────────────
-from rag import load_knowledge, get_relevant_context
-from system_prompt import build_system_prompt
-
 load_dotenv()
+
+# ── Env Var Validation ────────────────────────────────────
+import sys
+
+REQUIRED_ENV_VARS = [
+    "GROQ_API_KEY",
+    "GITHUB_APP_ID",
+    "GITHUB_INSTALLATION_ID",
+    "GITHUB_WEBHOOK_SECRET",
+    "GITHUB_PRIVATE_KEY"
+]
+
+missing_vars = [var for var in REQUIRED_ENV_VARS if not os.getenv(var)]
+if missing_vars:
+    print(f"\n❌ CRITICAL ERROR: Missing required environment variables: {', '.join(missing_vars)}", file=sys.stderr)
+    print("Please create a .env file based on .env.example before running the application.\n", file=sys.stderr)
+    sys.exit(1)
+
+# ── Local modules ─────────────────────────────────────────
+from rag import load_knowledge, get_relevant_context, upsert_github_repo, delete_github_repo
+from system_prompt import build_system_prompt
+from intent_router import classify_intent
+
 
 # ── Logging ───────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
@@ -53,6 +73,8 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "https://www.manishrathaur.tech",
+        "https://manishrathaur.tech",
         "http://localhost:5173",
         "http://localhost:5174",
         "http://localhost:5175",
@@ -89,6 +111,21 @@ def check_rate_limit(ip: str) -> None:
 #  REQUEST / RESPONSE SCHEMAS
 # ══════════════════════════════════════════════════════════
 
+class Source(BaseModel):
+    title: str
+    type: str
+    url: str
+    source_type: str = "portfolio"
+    content_type: str = "unknown"
+    visibility: str = "public"
+    trust_level: str = "verified"
+    timestamp: Optional[str] = None
+    last_updated: Optional[str] = None
+
+class RelatedLink(BaseModel):
+    title: str
+    url: str
+
 class ChatMessage(BaseModel):
     role: str        # "user" or "assistant"
     content: str
@@ -98,9 +135,12 @@ class ChatRequest(BaseModel):
     history: Optional[List[ChatMessage]] = []
 
 class ChatResponse(BaseModel):
-    reply:       str
+    answer:      str
     provider:    str
     chunks_used: int
+    sources:     List[Source] = []
+    related:     List[RelatedLink] = []
+    confidence:  str = "high"
 
 
 # ══════════════════════════════════════════════════════════
@@ -159,7 +199,7 @@ def try_groq(msgs: list[dict]) -> str | None:
         res = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=msgs,
-            max_tokens=512,
+            max_tokens=800,
         )
         return res.choices[0].message.content
     except Exception as e:
@@ -219,11 +259,13 @@ def try_mistral(msgs: list[dict]) -> str | None:
         api_key = os.getenv("MISTRAL_API_KEY")
         if not api_key:
             return None
-        from mistralai import Mistral
-        client = Mistral(api_key=api_key)
-        res = client.chat.complete(
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key, base_url="https://api.mistral.ai/v1")
+        res = client.chat.completions.create(
             model="mistral-small-latest",
             messages=msgs,
+            max_tokens=800,
         )
         return res.choices[0].message.content
     except Exception as e:
@@ -237,12 +279,13 @@ def try_together(msgs: list[dict]) -> str | None:
         api_key = os.getenv("TOGETHER_API_KEY")
         if not api_key:
             return None
-        from together import Together
-        client = Together(api_key=api_key)
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key, base_url="https://api.together.ai/v1")
         res = client.chat.completions.create(
-            model="meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
+            model="meta-llama/Llama-3.3-70B-Instruct-Turbo",
             messages=msgs,
-            max_tokens=512,
+            max_tokens=800,
         )
         return res.choices[0].message.content
     except Exception as e:
@@ -259,8 +302,30 @@ PROVIDERS = [
     ("Together", try_together),
 ]
 
+
+def configured_providers() -> list[str]:
+    return [
+        name for name, _ in PROVIDERS
+        if os.getenv(f"{name.upper()}_API_KEY")
+    ]
+
+
+def configured_provider_hint() -> str:
+    return ", ".join(configured_providers()) or "none"
+
 def route_llm(msgs: list[dict]) -> tuple[str, str]:
     route_start = time.perf_counter()
+    configured = configured_providers()
+
+    if not configured:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "No LLM provider API keys are configured. Set at least one of: "
+                "GROQ_API_KEY, GEMINI_API_KEY, COHERE_API_KEY, MISTRAL_API_KEY, TOGETHER_API_KEY."
+            ),
+        )
+
     for name, fn in PROVIDERS:
         logger.info(f"Trying provider: {name}")
         reply = fn(msgs)
@@ -271,7 +336,11 @@ def route_llm(msgs: list[dict]) -> tuple[str, str]:
     logger.info("route_llm() finished in %.3fs with no provider success.", time.perf_counter() - route_start)
     raise HTTPException(
         status_code=503,
-        detail="All LLM providers failed. Check your .env API keys.",
+        detail=(
+            "Configured LLM providers failed. "
+            f"Configured: {configured_provider_hint()}. "
+            "Check provider credentials, quotas, and upstream service status."
+        ),
     )
 
 
@@ -284,15 +353,9 @@ def ping():
     return {"message": "Backend is alive!"}
 
 
-@app.api_route("/health", methods=["GET", "HEAD"])
-def health(request: Request):
-    if request.method == "HEAD":
-        return Response(status_code=200)
-
-    configured = [
-        name for name, _ in PROVIDERS
-        if os.getenv(f"{name.upper()}_API_KEY")
-    ]
+@app.get("/health")
+def health():
+    configured = configured_providers()
     return {
         "status": "ok" if configured else "degraded",
         "providers_ready": configured,
@@ -301,11 +364,15 @@ def health(request: Request):
     }
 
 
+@app.head("/health")
+def health_head():
+    return Response(status_code=200)
+
 
 @app.get("/providers")
 def providers():
     return {
-        name: bool(os.getenv(f"{name.upper()}_API_KEY"))
+        name: name in configured_providers()
         for name, _ in PROVIDERS
     }
 
@@ -316,6 +383,48 @@ def reload():
     return {"status": "reloaded", "chunks": total}
 
 
+@app.post("/webhook/github")
+async def github_webhook(request: Request):
+    """Handles GitHub App webhook events to keep the RAG index fresh."""
+    secret = os.getenv("GITHUB_WEBHOOK_SECRET")
+    if not secret:
+        raise HTTPException(status_code=500, detail="Webhook secret not configured")
+        
+    signature = request.headers.get("X-Hub-Signature-256")
+    if not signature:
+        raise HTTPException(status_code=400, detail="Missing signature")
+        
+    body = await request.body()
+    
+    # Verify HMAC signature
+    expected_mac = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    expected_sig = f"sha256={expected_mac}"
+    if not hmac.compare_digest(signature, expected_sig):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+        
+    event = request.headers.get("X-GitHub-Event")
+    payload = await request.json()
+    
+    if event == "repository":
+        action = payload.get("action")
+        repo_data = payload.get("repository", {})
+        repo_name = repo_data.get("name")
+        
+        if action in ["created", "edited", "publicized", "unarchived"]:
+            success = upsert_github_repo(repo_data)
+            return {"status": "upserted" if success else "failed", "repo": repo_name}
+            
+        elif action in ["deleted", "archived", "privatized"]:
+            success = delete_github_repo(repo_name)
+            return {"status": "deleted" if success else "failed", "repo": repo_name}
+            
+    elif event == "ping":
+        return {"status": "pong"}
+        
+    return {"status": "ignored", "event": event}
+
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest, request: Request):
     if not req.message.strip():
@@ -324,16 +433,76 @@ def chat(req: ChatRequest, request: Request):
     client_ip = request.client.host if request.client else "unknown"
     check_rate_limit(client_ip)
 
-    logger.info(f"RAG query: '{req.message[:60]}'")
-    rag_context = get_relevant_context(req.message)
+    logger.info(f"Chat query: '{req.message[:60]}'")
+    
+    # ── 1. Intent Classification ──
+    intent = classify_intent(req.message, req.history)
+    
+    # ── 2. Static Responses for Fluff ──
+    if intent == "GREETING":
+        reply = "Hi! I'm Manish Rathaur's AI portfolio assistant. I can answer questions about his projects, GitHub repositories, technical skills, experience, and the technologies he has worked with. What would you like to know?"
+        return ChatResponse(
+            answer=reply,
+            provider="ROUTER",
+            chunks_used=0,
+            sources=[],
+            related=[],
+            confidence="high"
+        )
+        
+    if intent == "OFF_TOPIC":
+        reply = "I'm specialized in answering questions about Manish Rathaur's professional portfolio, GitHub projects, technical skills, and experience. I can't reliably answer unrelated topics, but I'd be happy to help you explore his work."
+        return ChatResponse(
+            answer=reply,
+            provider="ROUTER",
+            chunks_used=0,
+            sources=[],
+            related=[],
+            confidence="high"
+        )
+
+    # ── 3. RAG Pipeline for Portfolio Queries & Follow-ups ──
+    rag_context, sources, best_distance = get_relevant_context(req.message)
     chunks_used = len(rag_context.split("---")) if rag_context else 0
-    logger.info(f"RAG returned {chunks_used} chunk(s)")
+    
+    logger.info(f"RAG returned {chunks_used} chunk(s) with best_distance={best_distance:.3f}")
+
+    if best_distance > 1.2 or not rag_context:
+        logger.warning(f"No good matches found for query (best dist: {best_distance})")
+        reply = "I couldn't find verified information about that in Manish's connected GitHub repositories or portfolio data. I prefer not to guess. You can ask me about his projects, technologies, repositories, or experience."
+        return ChatResponse(
+            answer=reply,
+            provider="ROUTER",
+            chunks_used=0,
+            sources=[],
+            related=[],
+            confidence="low"
+        )
 
     system = build_system_prompt(rag_context)
     msgs   = build_messages(system, req.history or [], req.message)
     reply, provider = route_llm(msgs)
 
-    return ChatResponse(reply=reply, provider=provider, chunks_used=chunks_used)
+    structured_sources = [Source(**s) for s in sources]
+    
+    unique_links = []
+    seen_urls = set()
+    for s in sources:
+        url = s.get("url", "/")
+        if url != "/" and url not in seen_urls:
+            seen_urls.add(url)
+            unique_links.append({"title": s.get("title", "Link"), "url": url})
+            
+    structured_related = [RelatedLink(**r) for r in unique_links]
+
+    return ChatResponse(
+        answer=reply, 
+        provider=provider, 
+        chunks_used=chunks_used,
+        sources=structured_sources,
+        related=structured_related,
+        confidence="high"
+    )
 
 
 # ══════════════════════════════════════════════════════════
