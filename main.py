@@ -133,6 +133,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     history: Optional[List[ChatMessage]] = []
+    context: Optional[str] = None
 
 class ChatResponse(BaseModel):
     answer:      str
@@ -439,48 +440,28 @@ def chat(req: ChatRequest, request: Request):
     # ── 1. Intent Classification ──
     intent = classify_intent(req.message, req.history)
     
-    # ── 2. Static Responses for Fluff ──
-    if intent == "GREETING":
-        reply = "Hi! I'm Manish Rathaur's AI portfolio assistant. I can answer questions about his projects, GitHub repositories, technical skills, experience, and the technologies he has worked with. What would you like to know?"
-        return ChatResponse(
-            answer=reply,
-            provider="ROUTER",
-            chunks_used=0,
-            sources=[],
-            related=[],
-            confidence="high"
-        )
+    # ── 2. RAG Pipeline for Portfolio Queries & Follow-ups ──
+    rag_context = ""
+    sources = []
+    best_distance = 999.0
+    chunks_used = 0
+
+    if intent in ["PORTFOLIO_QUERY", "FOLLOW_UP"]:
+        rag_context, sources, best_distance = get_relevant_context(req.message)
+        chunks_used = len(rag_context.split("---")) if rag_context else 0
         
-    if intent == "OFF_TOPIC":
-        reply = "I'm specialized in answering questions about Manish Rathaur's professional portfolio, GitHub projects, technical skills, and experience. I can't reliably answer unrelated topics, but I'd be happy to help you explore his work."
-        return ChatResponse(
-            answer=reply,
-            provider="ROUTER",
-            chunks_used=0,
-            sources=[],
-            related=[],
-            confidence="high"
-        )
+        logger.info(f"RAG returned {chunks_used} chunk(s) with best_distance={best_distance:.3f}")
 
-    # ── 3. RAG Pipeline for Portfolio Queries & Follow-ups ──
-    rag_context, sources, best_distance = get_relevant_context(req.message)
-    chunks_used = len(rag_context.split("---")) if rag_context else 0
-    
-    logger.info(f"RAG returned {chunks_used} chunk(s) with best_distance={best_distance:.3f}")
-
-    if best_distance > 1.2 or not rag_context:
-        logger.warning(f"No good matches found for query (best dist: {best_distance})")
-        reply = "I couldn't find verified information about that in Manish's connected GitHub repositories or portfolio data. I prefer not to guess. You can ask me about his projects, technologies, repositories, or experience."
-        return ChatResponse(
-            answer=reply,
-            provider="ROUTER",
-            chunks_used=0,
-            sources=[],
-            related=[],
-            confidence="low"
-        )
+        if best_distance > 1.2 or not rag_context:
+            logger.warning(f"No good matches found for query (best dist: {best_distance})")
+            rag_context = ""
+            sources = []
+            chunks_used = 0
 
     system = build_system_prompt(rag_context)
+    if req.context:
+        system += f"\n\nADDITIONAL CONTEXT (User is reading this page):\n{req.context}"
+        
     msgs   = build_messages(system, req.history or [], req.message)
     reply, provider = route_llm(msgs)
 
