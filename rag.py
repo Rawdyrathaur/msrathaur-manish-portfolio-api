@@ -44,7 +44,7 @@ def _current_manifest() -> dict:
             "mtime_ns": stat.st_mtime_ns,
         })
     return {
-        "schema_version": 4,  # Bumping to 4 to force cache invalidation for the new Deep Sync
+        "schema_version": 5,  # Bumping to 5 to force cache invalidation for the new chunk ids
         "collection_name": COLLECTION_NAME,
         "embed_model": EMBED_MODEL,
         "files": files,
@@ -103,11 +103,14 @@ def _chunk_markdown(text: str, source: str) -> list[dict]:
     chunks = []
     current = []
     heading = "Intro"
+    chunk_counter = 0
     
     def add_chunk(text_block, current_heading):
+        nonlocal chunk_counter
         if text_block:
+            chunk_counter += 1
             chunks.append({
-                "id": f"{source}::{current_heading.lower().replace(' ', '_')}",
+                "id": f"{source}::{chunk_counter}::{current_heading.lower().replace(' ', '_')}",
                 "text": text_block.strip(),
                 "source": source,
                 "heading": current_heading,
