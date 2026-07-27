@@ -201,6 +201,7 @@ def try_groq(msgs: list[dict]) -> str | None:
             model="llama-3.3-70b-versatile",
             messages=msgs,
             max_tokens=800,
+            temperature=0.0,
         )
         return res.choices[0].message.content
     except Exception as e:
@@ -227,6 +228,7 @@ def try_gemini(msgs: list[dict]) -> str | None:
         model = genai.GenerativeModel(
             model_name="gemini-2.0-flash",
             system_instruction=system,
+            generation_config=genai.types.GenerationConfig(temperature=0.0),
         )
         chat = model.start_chat(history=history_msgs)
         res  = chat.send_message(user_message)
@@ -247,6 +249,7 @@ def try_cohere(msgs: list[dict]) -> str | None:
         res = client.chat(
             model="command-r-plus",
             messages=msgs,
+            temperature=0.0,
         )
         return res.message.content[0].text
     except Exception as e:
