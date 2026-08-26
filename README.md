@@ -1,3 +1,14 @@
+---
+title: Manish Portfolio API
+emoji: 👨🏻‍💻
+colorFrom: green
+colorTo: blue
+sdk: docker
+pinned: false
+license: mit
+short_description: Production RAG API for Manish's portfolio
+---
+
 # Manish Portfolio API
 
 Production FastAPI backend for the AI assistant on [manishrathaur.tech](https://www.manishrathaur.tech).
