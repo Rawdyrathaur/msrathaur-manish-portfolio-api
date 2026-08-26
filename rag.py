@@ -22,8 +22,8 @@ MANIFEST_PATH   = CACHE_DIR / "manifest.json"
 
 # TOP_K is adaptive — simple questions get 3, broad questions get 7
 TOP_K_DEFAULT = 5
-TOP_K_MAX     = 8
-RETRIEVAL_CANDIDATES = 20
+TOP_K_MAX     = 12
+RETRIEVAL_CANDIDATES = 50
 MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "12000"))
 
 # ── Load model once at startup ────────────────────────────
@@ -303,10 +303,27 @@ def get_relevant_context(query: str, top_k: int | None = None) -> tuple[str, lis
         if token not in {"what", "which", "about", "tell", "manish", "does", "have", "with"}
     }
     ranked = []
+    category_sources = {
+        "project": "projects",
+        "skill": "skills",
+        "experience": "experience",
+        "blog": "blog",
+        "article": "blog",
+        "contact": "contact",
+    }
     for doc, meta, distance in zip(docs, metadatas, distances):
         haystack = f"{meta.get('title', '')} {meta.get('heading', '')} {doc}".lower()
         overlap = sum(1 for term in query_terms if term in haystack)
-        ranked.append((max(float(distance) - (0.08 * overlap), 0.0), float(distance), doc, meta))
+        score = float(distance) - (0.08 * overlap)
+        source = meta.get("source", "").lower()
+        if meta.get("source_type") == "portfolio_live":
+            score -= 0.10
+        for term, source_name in category_sources.items():
+            if term in query.lower() and source_name in source:
+                score -= 0.40
+        if "project" in query.lower() and meta.get("content_type") == "repo_overview":
+            score -= 0.08
+        ranked.append((max(score, 0.0), float(distance), doc, meta))
     ranked.sort(key=lambda item: item[0])
 
     labeled_chunks = []
@@ -315,7 +332,10 @@ def get_relevant_context(query: str, top_k: int | None = None) -> tuple[str, lis
     best_distance = distances[0] if distances else 999.0
 
     context_chars = 0
-    for _, dist, doc, meta in ranked[:k]:
+    chunks_per_title: dict[str, int] = {}
+    for _, dist, doc, meta in ranked:
+        if len(labeled_chunks) >= k:
+            break
         # Cosine distance above this is usually unrelated. Exact term matches
         # remain eligible because repository names are important portfolio queries.
         has_exact_term = any(term in doc.lower() for term in query_terms)
@@ -325,6 +345,8 @@ def get_relevant_context(query: str, top_k: int | None = None) -> tuple[str, lis
         source  = meta.get("source", "unknown")
         heading = meta.get("heading", "")
         title   = meta.get("title", source)
+        if chunks_per_title.get(title, 0) >= 2:
+            continue
         m_type  = meta.get("type", "unknown")
         url     = meta.get("url", "/")
         source_type = meta.get("source_type", "portfolio")
@@ -345,6 +367,7 @@ def get_relevant_context(query: str, top_k: int | None = None) -> tuple[str, lis
             continue
         labeled_chunks.append(labeled)
         context_chars += len(labeled)
+        chunks_per_title[title] = chunks_per_title.get(title, 0) + 1
         
         if title not in sources_map:
             sources_map[title] = {
