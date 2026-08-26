@@ -185,6 +185,7 @@ def clean_for_tts(text: str) -> str:
     text = re.sub(r"```.*?```", " Code example omitted. ", text, flags=re.DOTALL)
     text = re.sub(r"\[([^\]]+)]\([^)]+\)", r"\1", text)
     text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"【[^】]+】", "", text)
     text = re.sub(r"[*_`#>]", "", text)
     text = re.sub(r"^\s*[-+]\s+", "", text, flags=re.MULTILINE)
     text = unicodedata.normalize("NFKC", text)
@@ -396,42 +397,9 @@ def sanitize_answer(answer: str) -> str:
     """Keep raw URLs and repository file paths out of conversational output."""
     answer = re.sub(r"\[([^\]]+)]\(https?://[^)]+\)", r"\1", answer)
     answer = re.sub(r"https?://\S+", "", answer)
+    answer = re.sub(r"【[^】]+】", "", answer)
     answer = re.sub(r"(?:src|backend|connectors)/[\w./-]+", "", answer)
     return re.sub(r"[ \t]+\n", "\n", answer).strip()
-
-
-def user_facing_sources(sources: list[dict], query: str) -> list[dict]:
-    """Expose useful public pages, never raw portfolio source-code files."""
-    query_lower = query.lower()
-    github_requested = any(term in query_lower for term in ("github", "repo", "repository"))
-    selected = []
-    seen_urls = set()
-
-    for source in sources:
-        item = dict(source)
-        if item.get("source_type") == "portfolio_live":
-            path = item.get("source", "")
-            if "/blog/articles/" in path:
-                slug = os.path.splitext(os.path.basename(path))[0]
-                item["url"] = f"https://www.manishrathaur.tech/blog/{slug}"
-            elif "/blog/" in path:
-                item["url"] = "https://www.manishrathaur.tech/blog"
-            else:
-                item["title"] = "Manish's Portfolio"
-                item["url"] = "https://www.manishrathaur.tech/"
-        elif item.get("source_type") == "github":
-            if not github_requested:
-                continue
-        else:
-            continue
-
-        if item["url"] in seen_urls:
-            continue
-        seen_urls.add(item["url"])
-        selected.append(item)
-        if len(selected) == 4:
-            break
-    return selected
 
 
 # ══════════════════════════════════════════════════════════
@@ -612,25 +580,12 @@ def chat(req: ChatRequest, request: Request):
         logger.warning("All LLM providers unavailable; returning grounded extractive answer")
         reply, provider, confidence = extractive_fallback(rag_context), "RAG fallback", "medium"
 
-    public_sources = user_facing_sources(sources, req.message)
-    structured_sources = [Source(**s) for s in public_sources]
-    
-    unique_links = []
-    seen_urls = set()
-    for s in public_sources:
-        url = s.get("url", "/")
-        if url != "/" and url not in seen_urls:
-            seen_urls.add(url)
-            unique_links.append({"title": s.get("title", "Link"), "url": url})
-            
-    structured_related = [RelatedLink(**r) for r in unique_links]
-
     return ChatResponse(
         answer=sanitize_answer(reply),
         provider=provider, 
         chunks_used=chunks_used,
-        sources=structured_sources,
-        related=structured_related,
+        sources=[],
+        related=[],
         confidence=confidence
     )
 
