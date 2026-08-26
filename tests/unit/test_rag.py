@@ -3,7 +3,7 @@ Unit tests for RAG system (knowledge chunking, embedding, retrieval).
 """
 
 import pytest
-from rag import _chunk_markdown, _split_into_chunks
+from rag import _chunk_markdown
 
 
 def test_chunk_markdown_splits_at_double_hash_headings():
@@ -20,10 +20,10 @@ Content for section 2"""
     chunks = _chunk_markdown(text, "test.md")
     
     assert len(chunks) == 3
-    assert chunks[0]["id"] == "test.md::section_1"
-    assert chunks[1]["id"] == "test.md::section_2"
-    assert "Content for section 1" in chunks[0]["text"]
-    assert "Content for section 2" in chunks[1]["text"]
+    assert chunks[0]["id"] == "test.md::1::intro"
+    assert chunks[1]["id"] == "test.md::2::section_1"
+    assert "Content for section 1" in chunks[1]["text"]
+    assert "Content for section 2" in chunks[2]["text"]
 
 
 def test_chunk_markdown_preserves_all_content():
@@ -66,7 +66,7 @@ def test_chunk_markdown_no_headings_creates_intro_chunk():
     chunks = _chunk_markdown(text, "plain.md")
     
     assert len(chunks) == 1
-    assert chunks[0]["id"] == "plain.md::intro"
+    assert chunks[0]["id"] == "plain.md::1::intro"
 
 
 def test_chunk_markdown_empty_file():

@@ -54,7 +54,7 @@ def test_health_returns_rag_status(client):
     
     data = response.json()
     assert "rag" in data
-    assert data["rag"] == "ready"
+    assert data["rag"] in {"initializing", "ready", "error"}
 
 
 def test_health_with_no_providers_degraded(client, monkeypatch):

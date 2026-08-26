@@ -1,9 +1,9 @@
 import os
 import time
-import jwt
 import logging
 import requests
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +11,12 @@ GITHUB_USERNAME = "Rawdyrathaur"
 GITHUB_API_URL = "https://api.github.com"
 MAX_FILE_TREE_ITEMS = 50
 MAX_README_LENGTH = 8000
+REQUEST_TIMEOUT = float(os.getenv("SOURCE_REQUEST_TIMEOUT", "12"))
+MAX_GITHUB_REPOS = int(os.getenv("MAX_GITHUB_REPOS", "50"))
+
+
+def _get(url: str, headers: dict) -> requests.Response:
+    return requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
 
 def get_installation_token() -> str:
     """Generate a GitHub App installation access token using JWT."""
@@ -27,6 +33,7 @@ def get_installation_token() -> str:
         return ""
 
     logger.info(f"Generating GitHub App token for app {app_id}, installation {installation_id}...")
+    import jwt
     
     if "-----BEGIN" in private_key and "\n" not in private_key:
         private_key = private_key.replace("\\n", "\n")
@@ -45,7 +52,8 @@ def get_installation_token() -> str:
     }
     resp = requests.post(
         f"{GITHUB_API_URL}/app/installations/{installation_id}/access_tokens",
-        headers=headers
+        headers=headers,
+        timeout=REQUEST_TIMEOUT,
     )
     
     if resp.status_code == 201:
@@ -64,7 +72,7 @@ def get_repo_details(repo_name: str, owner: str, headers: dict) -> dict:
     }
     
     # 1. Fetch README
-    readme_resp = requests.get(f"{GITHUB_API_URL}/repos/{owner}/{repo_name}/readme", headers=headers)
+    readme_resp = _get(f"{GITHUB_API_URL}/repos/{owner}/{repo_name}/readme", headers)
     if readme_resp.status_code == 200:
         readme_data = readme_resp.json()
         content = readme_data.get("content", "")
@@ -78,16 +86,16 @@ def get_repo_details(repo_name: str, owner: str, headers: dict) -> dict:
                 logger.warning(f"Could not decode README for {repo_name}: {e}")
 
     # 2. Fetch Languages
-    lang_resp = requests.get(f"{GITHUB_API_URL}/repos/{owner}/{repo_name}/languages", headers=headers)
+    lang_resp = _get(f"{GITHUB_API_URL}/repos/{owner}/{repo_name}/languages", headers)
     if lang_resp.status_code == 200:
         details["languages"] = lang_resp.json()
 
     # 3. Fetch File Tree (Default Branch)
     # First get the default branch name (usually main or master)
-    repo_info_resp = requests.get(f"{GITHUB_API_URL}/repos/{owner}/{repo_name}", headers=headers)
+    repo_info_resp = _get(f"{GITHUB_API_URL}/repos/{owner}/{repo_name}", headers)
     if repo_info_resp.status_code == 200:
         default_branch = repo_info_resp.json().get("default_branch", "main")
-        tree_resp = requests.get(f"{GITHUB_API_URL}/repos/{owner}/{repo_name}/git/trees/{default_branch}?recursive=1", headers=headers)
+        tree_resp = _get(f"{GITHUB_API_URL}/repos/{owner}/{repo_name}/git/trees/{default_branch}?recursive=1", headers)
         if tree_resp.status_code == 200:
             tree_data = tree_resp.json().get("tree", [])
             # Filter out some common noise like .git, node_modules, etc.
@@ -177,7 +185,11 @@ def get_github_chunks() -> list[dict]:
     Fetches GitHub profile and deeply syncs repositories using the Installation Token.
     Returns the formatted RAG chunks.
     """
-    token = get_installation_token()
+    try:
+        token = get_installation_token()
+    except Exception as exc:
+        logger.warning("GitHub App authentication failed; using public API: %s", exc)
+        token = ""
     headers = {"Accept": "application/vnd.github.v3+json"}
     if token:
         headers["Authorization"] = f"token {token}"
@@ -186,7 +198,7 @@ def get_github_chunks() -> list[dict]:
     
     try:
         # 1. Fetch user profile
-        user_resp = requests.get(f"{GITHUB_API_URL}/users/{GITHUB_USERNAME}", headers=headers)
+        user_resp = _get(f"{GITHUB_API_URL}/users/{GITHUB_USERNAME}", headers)
         if user_resp.status_code == 200:
             user_data = user_resp.json()
             profile_text = f"GitHub Profile: {user_data.get('name', GITHUB_USERNAME)}\n"
@@ -213,28 +225,31 @@ def get_github_chunks() -> list[dict]:
             })
             
         # 2. Fetch repos
-        app_id = os.getenv("GITHUB_APP_ID")
-        if app_id and token:
-            repos_url = f"{GITHUB_API_URL}/installation/repositories?per_page=100"
-            repos_resp = requests.get(repos_url, headers=headers)
-            if repos_resp.status_code == 200:
-                repos_data = repos_resp.json().get("repositories", [])
-            else:
-                repos_data = []
-        else:
-            repos_url = f"{GITHUB_API_URL}/users/{GITHUB_USERNAME}/repos?sort=stargazers_count&direction=desc&per_page=100"
-            repos_resp = requests.get(repos_url, headers=headers)
-            repos_data = repos_resp.json() if repos_resp.status_code == 200 else []
+        # Public visitors must never receive private repository information,
+        # even when the configured GitHub App can access it.
+        repos_url = f"{GITHUB_API_URL}/users/{GITHUB_USERNAME}/repos?sort=updated&direction=desc&per_page=100"
+        repos_resp = _get(repos_url, headers)
+        repos_data = repos_resp.json() if repos_resp.status_code == 200 else []
 
-        for repo in repos_data:
-            if repo.get("fork"): continue
+        public_repos = [
+            repo for repo in repos_data
+            if not repo.get("fork") and not repo.get("private")
+        ][:MAX_GITHUB_REPOS]
+
+        def fetch_repo(repo: dict) -> list[dict]:
             repo_name = repo.get("name")
             owner = repo.get("owner", {}).get("login", GITHUB_USERNAME)
-            
-            logger.info(f"Syncing deep details for repository: {repo_name}...")
-            details = get_repo_details(repo_name, owner, headers)
-            repo_chunks = format_repo_chunks(repo, details)
-            chunks.extend(repo_chunks)
+            try:
+                details = get_repo_details(repo_name, owner, headers)
+                return format_repo_chunks(repo, details)
+            except requests.RequestException as exc:
+                logger.warning("Could not deep-sync repository %s: %s", repo_name, exc)
+                return format_repo_chunks(repo, {"readme": "", "languages": {}, "tree": []})
+
+        with ThreadPoolExecutor(max_workers=min(8, max(len(public_repos), 1))) as executor:
+            futures = [executor.submit(fetch_repo, repo) for repo in public_repos]
+            for future in as_completed(futures):
+                chunks.extend(future.result())
 
     except Exception as e:
         logger.warning(f"Failed to fetch GitHub data: {e}")
