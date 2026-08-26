@@ -9,6 +9,7 @@ import hashlib
 import unicodedata
 import requests
 import edge_tts
+import re
 from groq import Groq
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -181,6 +182,11 @@ def build_messages(
 
 def clean_for_tts(text: str) -> str:
     """Removes special unicode characters that break Edge TTS."""
+    text = re.sub(r"```.*?```", " Code example omitted. ", text, flags=re.DOTALL)
+    text = re.sub(r"\[([^\]]+)]\([^)]+\)", r"\1", text)
+    text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"[*_`#>]", "", text)
+    text = re.sub(r"^\s*[-+]\s+", "", text, flags=re.MULTILINE)
     text = unicodedata.normalize("NFKC", text)
     replacements = {
         "\u2013": "-",   # en dash
@@ -386,6 +392,48 @@ def extractive_fallback(rag_context: str) -> str:
     return "\n\n".join(excerpts)[:1800]
 
 
+def sanitize_answer(answer: str) -> str:
+    """Keep raw URLs and repository file paths out of conversational output."""
+    answer = re.sub(r"\[([^\]]+)]\(https?://[^)]+\)", r"\1", answer)
+    answer = re.sub(r"https?://\S+", "", answer)
+    answer = re.sub(r"(?:src|backend|connectors)/[\w./-]+", "", answer)
+    return re.sub(r"[ \t]+\n", "\n", answer).strip()
+
+
+def user_facing_sources(sources: list[dict], query: str) -> list[dict]:
+    """Expose useful public pages, never raw portfolio source-code files."""
+    query_lower = query.lower()
+    github_requested = any(term in query_lower for term in ("github", "repo", "repository"))
+    selected = []
+    seen_urls = set()
+
+    for source in sources:
+        item = dict(source)
+        if item.get("source_type") == "portfolio_live":
+            path = item.get("source", "")
+            if "/blog/articles/" in path:
+                slug = os.path.splitext(os.path.basename(path))[0]
+                item["url"] = f"https://www.manishrathaur.tech/blog/{slug}"
+            elif "/blog/" in path:
+                item["url"] = "https://www.manishrathaur.tech/blog"
+            else:
+                item["title"] = "Manish's Portfolio"
+                item["url"] = "https://www.manishrathaur.tech/"
+        elif item.get("source_type") == "github":
+            if not github_requested:
+                continue
+        else:
+            continue
+
+        if item["url"] in seen_urls:
+            continue
+        seen_urls.add(item["url"])
+        selected.append(item)
+        if len(selected) == 4:
+            break
+    return selected
+
+
 # ══════════════════════════════════════════════════════════
 #  ENDPOINTS
 # ══════════════════════════════════════════════════════════
@@ -564,11 +612,12 @@ def chat(req: ChatRequest, request: Request):
         logger.warning("All LLM providers unavailable; returning grounded extractive answer")
         reply, provider, confidence = extractive_fallback(rag_context), "RAG fallback", "medium"
 
-    structured_sources = [Source(**s) for s in sources]
+    public_sources = user_facing_sources(sources, req.message)
+    structured_sources = [Source(**s) for s in public_sources]
     
     unique_links = []
     seen_urls = set()
-    for s in sources:
+    for s in public_sources:
         url = s.get("url", "/")
         if url != "/" and url not in seen_urls:
             seen_urls.add(url)
@@ -577,7 +626,7 @@ def chat(req: ChatRequest, request: Request):
     structured_related = [RelatedLink(**r) for r in unique_links]
 
     return ChatResponse(
-        answer=reply, 
+        answer=sanitize_answer(reply),
         provider=provider, 
         chunks_used=chunks_used,
         sources=structured_sources,

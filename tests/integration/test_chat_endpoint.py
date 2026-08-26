@@ -206,3 +206,21 @@ def test_chat_blocks_private_configuration_requests(client):
     assert response.status_code == 200
     assert response.json()["provider"] == "Local"
     assert "can’t provide" in response.json()["answer"]
+
+
+def test_raw_portfolio_code_links_are_replaced(monkeypatch):
+    from main import sanitize_answer, user_facing_sources
+
+    sources = [{
+        "title": "Projects",
+        "source": "src/content/projects.jsx",
+        "source_type": "portfolio_live",
+        "url": "https://github.com/Rawdyrathaur/portfolio/blob/main/src/content/projects.jsx",
+    }]
+
+    cleaned = sanitize_answer("See [the code](https://github.com/example/file) at src/content/projects.jsx")
+    public = user_facing_sources(sources, "What projects has Manish built?")
+
+    assert "github.com" not in cleaned
+    assert "src/content" not in cleaned
+    assert public[0]["url"] == "https://www.manishrathaur.tech/"
