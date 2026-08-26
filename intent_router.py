@@ -49,7 +49,7 @@ def classify_intent(message: str, history: list = None) -> IntentType:
         prompt = f"{history_context}User Message: {message}"
         
         response = client.chat.completions.create(
-            model="llama3-8b-8192",  # Fast, lightweight model for routing
+            model="llama-3.1-8b-instant",  # Fast, lightweight model for routing
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt}

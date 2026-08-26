@@ -190,7 +190,7 @@ def clean_for_tts(text: str) -> str:
 # ══════════════════════════════════════════════════════════
 
 def try_groq(msgs: list[dict]) -> str | None:
-    """Primary — Groq (llama-3.3-70b) — 14,400 req/day free"""
+    """Primary — Groq (llama-3.1-70b) — 14,400 req/day free"""
     try:
         api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
@@ -198,7 +198,7 @@ def try_groq(msgs: list[dict]) -> str | None:
         from groq import Groq
         client = Groq(api_key=api_key)
         res = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-70b-versatile",
             messages=msgs,
             max_tokens=800,
             temperature=0.0,
@@ -210,7 +210,7 @@ def try_groq(msgs: list[dict]) -> str | None:
 
 
 def try_gemini(msgs: list[dict]) -> str | None:
-    """Fallback 1 — Google Gemini 2.0 Flash — 1,500 req/day free"""
+    """Fallback 1 — Google Gemini 3.6 Flash — 1,500 req/day free"""
     try:
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
@@ -226,7 +226,7 @@ def try_gemini(msgs: list[dict]) -> str | None:
             })
         user_message = msgs[-1]["content"]
         model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash",
+            model_name="gemini-3.6-flash",
             system_instruction=system,
             generation_config=genai.types.GenerationConfig(temperature=0.0),
         )
