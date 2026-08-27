@@ -33,7 +33,10 @@ def test_ping_endpoint_after_startup(client):
 
 def test_providers_endpoint_lists_configuration(client):
     """Verify providers endpoint shows configured LLMs."""
-    response = client.get("/providers")
+    response = client.get(
+        "/providers",
+        headers={"X-Reload-Secret": "test-reload-secret"},
+    )
     
     assert response.status_code == 200
     data = response.json()

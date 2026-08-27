@@ -1,0 +1,17 @@
+.git
+.github
+.env
+.env.*
+venv/
+.venv/
+__pycache__/
+.pytest_cache/
+htmlcov/
+coverage.xml
+*.pyc
+*.pem
+*.key
+*.p12
+credentials.json
+tests/
+test_*.py

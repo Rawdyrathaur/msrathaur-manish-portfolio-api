@@ -143,7 +143,7 @@ def get_portfolio_chunks() -> list[dict]:
         for index, content in enumerate(_split_text(cleaned), start=1):
             chunks.append({
                 "id": f"portfolio::{source_hash}::{index}",
-                "text": f"Portfolio source: {path}\n\n{content}",
+                "text": content,
                 "source": path,
                 "heading": title,
                 "title": title,
@@ -154,7 +154,7 @@ def get_portfolio_chunks() -> list[dict]:
                 "visibility": "public",
                 "trust_level": "verified",
                 "timestamp": item.get("sha", ""),
-                "last_updated": "",
+                "last_updated": item.get("sha", ""),
             })
 
     logger.info("Fetched %d live portfolio chunks", len(chunks))

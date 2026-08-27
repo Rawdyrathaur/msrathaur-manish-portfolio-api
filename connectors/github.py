@@ -3,13 +3,13 @@ import time
 import logging
 import requests
 import base64
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 
 GITHUB_USERNAME = "Rawdyrathaur"
 GITHUB_API_URL = "https://api.github.com"
-MAX_FILE_TREE_ITEMS = 50
 MAX_README_LENGTH = 8000
 REQUEST_TIMEOUT = float(os.getenv("SOURCE_REQUEST_TIMEOUT", "12"))
 MAX_GITHUB_REPOS = int(os.getenv("MAX_GITHUB_REPOS", "50"))
@@ -64,11 +64,10 @@ def get_installation_token() -> str:
 
 
 def get_repo_details(repo_name: str, owner: str, headers: dict) -> dict:
-    """Fetch README, languages, and file tree for a specific repository."""
+    """Fetch README and language metadata for a specific repository."""
     details = {
         "readme": "",
         "languages": {},
-        "tree": []
     }
     
     # 1. Fetch README
@@ -90,23 +89,68 @@ def get_repo_details(repo_name: str, owner: str, headers: dict) -> dict:
     if lang_resp.status_code == 200:
         details["languages"] = lang_resp.json()
 
-    # 3. Fetch File Tree (Default Branch)
-    # First get the default branch name (usually main or master)
-    repo_info_resp = _get(f"{GITHUB_API_URL}/repos/{owner}/{repo_name}", headers)
-    if repo_info_resp.status_code == 200:
-        default_branch = repo_info_resp.json().get("default_branch", "main")
-        tree_resp = _get(f"{GITHUB_API_URL}/repos/{owner}/{repo_name}/git/trees/{default_branch}?recursive=1", headers)
-        if tree_resp.status_code == 200:
-            tree_data = tree_resp.json().get("tree", [])
-            # Filter out some common noise like .git, node_modules, etc.
-            filtered_tree = [
-                item["path"] for item in tree_data 
-                if item["type"] == "blob" and not any(ignored in item["path"] for ignored in ["node_modules", ".git", "dist", "build", "venv", "__pycache__"])
-            ]
-            # Truncate the list if it's massive
-            details["tree"] = filtered_tree[:MAX_FILE_TREE_ITEMS]
-
     return details
+
+
+_README_INSTRUCTION = re.compile(
+    r"(?i)^\s*(?:ignore|disregard|forget|override|reveal|expose|system prompt|developer message|you are|act as|assistant:|system:)"
+)
+_TECHNOLOGIES = (
+    "FastAPI", "Django", "Flask", "Spring Boot", "React", "Vue", "Angular",
+    "Node.js", "TypeScript", "JavaScript", "Python", "Java", "Kotlin", "Swift",
+    "Docker", "Kubernetes", "Kafka", "PostgreSQL", "MySQL", "MongoDB", "Redis",
+    "ChromaDB", "Groq", "Gemini", "AWS", "GCP", "Azure", "Unity",
+)
+
+
+def extract_readme_facts(repo: dict, details: dict) -> str:
+    """Convert README prose into bounded facts, never a verbatim prompt chunk."""
+    readme = details.get("readme", "")
+    readme = re.sub(r"```.*?```", " ", readme, flags=re.DOTALL)
+    readme = re.sub(r"<!--.*?-->", " ", readme, flags=re.DOTALL)
+    readme = re.sub(r"!\[[^]]*]\([^)]+\)", " ", readme)
+    readme = re.sub(r"\[([^]]+)]\([^)]+\)", r"\1", readme)
+    readme = re.sub(r"<[^>]+>", " ", readme)
+    lines = [
+        line.strip() for line in readme.splitlines()
+        if line.strip() and not _README_INSTRUCTION.search(line)
+        and "shields.io" not in line and not line.lstrip().startswith("[!")
+    ]
+
+    description = (repo.get("description") or "").strip()
+    purpose = description
+    if not purpose:
+        for line in lines:
+            if not line.startswith(("#", "-", "*", "+")) and len(line) >= 30:
+                purpose = line[:500]
+                break
+
+    features = []
+    for line in lines:
+        if re.match(r"^[-*+]\s+", line):
+            feature = re.sub(r"^[-*+]\s+", "", line).strip()
+            if 8 <= len(feature) <= 220 and feature not in features:
+                features.append(feature)
+        if len(features) >= 6:
+            break
+
+    readme_lower = readme.lower()
+    stack = list(details.get("languages", {}).keys())
+    for technology in _TECHNOLOGIES:
+        if technology.lower() in readme_lower and technology not in stack:
+            stack.append(technology)
+
+    facts = [f"Repository: {repo.get('name', '')}"]
+    if purpose:
+        facts.append(f"Purpose: {purpose[:500]}")
+    if stack:
+        facts.append(f"Technology stack: {', '.join(stack[:15])}")
+    if features:
+        facts.append("Features: " + "; ".join(features))
+    topics = [str(topic) for topic in repo.get("topics", []) if topic]
+    if topics:
+        facts.append("Topics: " + ", ".join(topics[:12]))
+    return "\n".join(facts)
 
 
 def format_repo_chunks(repo: dict, details: dict) -> list[dict]:
@@ -149,32 +193,16 @@ def format_repo_chunks(repo: dict, details: dict) -> list[dict]:
         **base_meta
     })
 
-    # Chunk 2: README
-    if details["readme"]:
-        # If README is very long, we should technically chunk it further, but for now we truncated it.
+    # Chunk 2: Structured facts extracted from untrusted README text.
+    readme_facts = extract_readme_facts(repo, details)
+    if readme_facts:
         chunks.append({
-            "id": f"github_repo::{repo_name}::readme",
-            "text": f"README for {repo_name}:\n\n{details['readme']}",
+            "id": f"github_repo::{repo_name}::facts",
+            "text": readme_facts,
             "source": "github_repos",
-            "heading": f"{repo_name} - README",
-            "content_type": "repo_readme",
-            **base_meta
-        })
-
-    # Chunk 3: File Tree
-    if details["tree"]:
-        tree_text = f"File Structure for {repo_name}:\n"
-        tree_text += "\n".join(details["tree"])
-        if len(details["tree"]) == MAX_FILE_TREE_ITEMS:
-            tree_text += "\n... (truncated)"
-            
-        chunks.append({
-            "id": f"github_repo::{repo_name}::tree",
-            "text": tree_text.strip(),
-            "source": "github_repos",
-            "heading": f"{repo_name} - File Tree",
-            "content_type": "repo_tree",
-            **base_meta
+            "heading": f"{repo_name} - Structured facts",
+            "content_type": "repo_facts",
+            **{**base_meta, "trust_level": "untrusted_external"},
         })
 
     return chunks
@@ -244,7 +272,7 @@ def get_github_chunks() -> list[dict]:
                 return format_repo_chunks(repo, details)
             except requests.RequestException as exc:
                 logger.warning("Could not deep-sync repository %s: %s", repo_name, exc)
-                return format_repo_chunks(repo, {"readme": "", "languages": {}, "tree": []})
+                return format_repo_chunks(repo, {"readme": "", "languages": {}})
 
         with ThreadPoolExecutor(max_workers=min(8, max(len(public_repos), 1))) as executor:
             futures = [executor.submit(fetch_repo, repo) for repo in public_repos]

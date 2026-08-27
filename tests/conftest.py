@@ -127,7 +127,7 @@ def mock_groq(monkeypatch):
     mock_response = MagicMock()
     mock_response.choices = [MagicMock(message=MagicMock(content="Test response from Groq"))]
     mock.chat.completions.create.return_value = mock_response
-    monkeypatch.setattr("main.Groq", lambda api_key: mock)
+    monkeypatch.setattr("main.Groq", lambda **kwargs: mock)
     monkeypatch.setenv("GROQ_API_KEY", "test-groq-key-123")
     return mock
 
@@ -177,6 +177,7 @@ def client(mock_embedder, mock_chromadb, monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
     monkeypatch.setenv("RATE_LIMIT_REQUESTS", "100")
     monkeypatch.setenv("RATE_LIMIT_WINDOW", "60")
+    monkeypatch.setenv("RAG_RELOAD_SECRET", "test-reload-secret")
     
     return TestClient(app)
 
@@ -195,6 +196,7 @@ def test_env(monkeypatch):
     monkeypatch.setenv("TOGETHER_API_KEY", "test-together-key")
     monkeypatch.setenv("RATE_LIMIT_REQUESTS", "100")
     monkeypatch.setenv("RATE_LIMIT_WINDOW", "60")
+    monkeypatch.setenv("RAG_RELOAD_SECRET", "test-reload-secret")
 
 
 @pytest.fixture(scope="session")

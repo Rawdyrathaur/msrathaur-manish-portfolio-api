@@ -1,0 +1,33 @@
+name: backend-quality
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install --require-hashes -r requirements.lock
+      - run: python -m pip install -r requirements-dev.txt pip-audit
+      - run: pytest -q --no-cov
+      # Chroma CVEs below affect its HTTP multi-tenant server. This app uses only
+      # an in-process PersistentClient and exposes no Chroma HTTP endpoint.
+      - run: >-
+          pip-audit
+          --ignore-vuln PYSEC-2026-311
+          --ignore-vuln CVE-2026-45830
+          --ignore-vuln CVE-2026-45831
+          --ignore-vuln CVE-2026-45833
+      - uses: gitleaks/gitleaks-action@v2

@@ -23,6 +23,13 @@ _FOLLOW_UP = re.compile(
     r"\b(it|that|this|they|them|those|more|else|how|why|when|where|which one)\b",
     re.IGNORECASE,
 )
+_OFF_TOPIC = re.compile(
+    r"\b(?:weather|forecast|temperature|sports score|football score|cricket score|"
+    r"stock price|crypto price|bitcoin|ethereum|recipe|medical advice|diagnose|"
+    r"president|election|political news|latest news|capital of|solve this equation|"
+    r"calculate|translate)\b",
+    re.IGNORECASE,
+)
 
 
 def classify_intent(message: str, history: list | None = None) -> IntentType:
@@ -33,6 +40,8 @@ def classify_intent(message: str, history: list | None = None) -> IntentType:
         return "FOLLOW_UP"
     if any(term in normalized for term in _PORTFOLIO_TERMS):
         return "PORTFOLIO_QUERY"
+    if _OFF_TOPIC.search(normalized):
+        return "OFF_TOPIC"
     # Retrieval can still find exact project names not covered by this compact
     # vocabulary. The relevance gate decides whether a query is on-topic.
     return "PORTFOLIO_QUERY"

@@ -14,10 +14,10 @@ def test_whisper_endpoint_with_valid_audio(client, monkeypatch):
     mock_response = MagicMock()
     mock_response.text = "Hello, this is a test transcription"
     mock_groq.audio.transcriptions.create.return_value = mock_response
-    
-    monkeypatch.setattr("main.Groq", lambda api_key: mock_groq)
+
+    monkeypatch.setattr("main.Groq", lambda **kwargs: mock_groq)
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
-    
+
     audio_data = b"fake webm audio"
     response = client.post(
         "/whisper",
@@ -56,7 +56,7 @@ def test_whisper_transcription_returned_in_response(client, monkeypatch):
     mock_response.text = expected_text
     mock_groq.audio.transcriptions.create.return_value = mock_response
     
-    monkeypatch.setattr("main.Groq", lambda api_key: mock_groq)
+    monkeypatch.setattr("main.Groq", lambda **kwargs: mock_groq)
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
     
     response = client.post(
@@ -75,18 +75,33 @@ def test_whisper_handles_various_audio_formats(client, monkeypatch):
     mock_response.text = "Transcription"
     mock_groq.audio.transcriptions.create.return_value = mock_response
     
-    monkeypatch.setattr("main.Groq", lambda api_key: mock_groq)
+    monkeypatch.setattr("main.Groq", lambda **kwargs: mock_groq)
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
-    
-    formats = ["audio/webm", "audio/mp3", "audio/wav"]
-    
-    for audio_format in formats:
+
+    for audio_format in ["audio/webm", "audio/mp3", "audio/wav"]:
         response = client.post(
             "/whisper",
-            files={"audio": ("test.audio", io.BytesIO(b"data"), audio_format)}
+            files={"audio": ("test.audio", io.BytesIO(b"data"), audio_format)},
         )
-        # Should not fail due to format
-        assert response.status_code != 404
+        assert response.status_code == 200
+
+
+def test_whisper_rejects_oversized_upload(client, monkeypatch):
+    monkeypatch.setattr("main.MAX_AUDIO_BYTES", 4)
+    response = client.post(
+        "/whisper",
+        files={"audio": ("test.webm", io.BytesIO(b"12345"), "audio/webm")},
+    )
+    assert response.status_code == 413
+
+
+def test_whisper_rejects_overlong_recording(client):
+    response = client.post(
+        "/whisper",
+        headers={"X-Audio-Duration-Seconds": "61"},
+        files={"audio": ("test.webm", io.BytesIO(b"1234"), "audio/webm")},
+    )
+    assert response.status_code == 413
 
 
 def test_speak_endpoint_returns_audio(client, monkeypatch):

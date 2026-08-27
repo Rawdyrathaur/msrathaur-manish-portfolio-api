@@ -1,9 +1,11 @@
 import json
+import hashlib
 import logging
 import os
 import re
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import chromadb
@@ -38,7 +40,7 @@ _client     = chromadb.PersistentClient(path=str(PERSIST_DIR))
 _collection = _client.get_or_create_collection(
     COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
 )
-_load_lock = threading.RLock()
+_index_lock = threading.RLock()
 _index_state = {
     "status": "initializing",
     "chunks": 0,
@@ -158,92 +160,176 @@ def _chunk_markdown(text: str, source: str) -> list[dict]:
     return [c for c in chunks if c["text"].strip()]
 
 
+def _split_tokens(text: str) -> list[str]:
+    """Use one model-aware chunking policy for every connector."""
+    tokenizer = getattr(_embedder, "tokenizer", None)
+    configured = int(os.getenv("RAG_CHUNK_TOKENS", "480"))
+    model_limit = int(getattr(_embedder, "max_seq_length", configured) or configured)
+    chunk_tokens = max(120, min(configured, model_limit - 2))
+    overlap = max(1, int(chunk_tokens * float(os.getenv("RAG_CHUNK_OVERLAP", "0.12"))))
+
+    if tokenizer and callable(getattr(tokenizer, "encode", None)):
+        token_ids = tokenizer.encode(text, add_special_tokens=False)
+        if len(token_ids) <= chunk_tokens:
+            return [text.strip()] if text.strip() else []
+        chunks = []
+        step = chunk_tokens - overlap
+        for start in range(0, len(token_ids), step):
+            window = token_ids[start:start + chunk_tokens]
+            if not window:
+                break
+            chunks.append(tokenizer.decode(window, skip_special_tokens=True).strip())
+            if start + chunk_tokens >= len(token_ids):
+                break
+        return [chunk for chunk in chunks if chunk]
+
+    # Test/development fallback when a tokenizer is not available.
+    words = text.split()
+    if len(words) <= chunk_tokens:
+        return [text.strip()] if text.strip() else []
+    step = chunk_tokens - overlap
+    return [" ".join(words[start:start + chunk_tokens]) for start in range(0, len(words), step)]
+
+
+def _standardize_chunks(chunks: list[dict]) -> list[dict]:
+    standardized = []
+    for chunk in chunks:
+        text = chunk.get("text", "").strip()
+        if not text:
+            continue
+        parts = _split_tokens(text)
+        for index, part in enumerate(parts, start=1):
+            normalized = dict(chunk)
+            if len(parts) > 1:
+                normalized["id"] = f"{chunk['id']}::part{index}"
+            normalized["text"] = part
+            normalized["source_url"] = chunk.get("source_url", chunk.get("url", "/"))
+            normalized["content_hash"] = hashlib.sha256(part.encode("utf-8")).hexdigest()
+            standardized.append(normalized)
+    return standardized
+
+
+def _metadata_for(chunk: dict) -> dict:
+    return {
+        "source": chunk.get("source", "unknown"),
+        "heading": chunk.get("heading", ""),
+        "title": chunk.get("title", "Unknown"),
+        "type": chunk.get("type", "unknown"),
+        "url": chunk.get("url", "/"),
+        "source_url": chunk.get("source_url", chunk.get("url", "/")),
+        "source_type": chunk.get("source_type", "portfolio"),
+        "content_type": chunk.get("content_type", "unknown"),
+        "visibility": chunk.get("visibility", "public"),
+        "trust_level": chunk.get("trust_level", "verified"),
+        "timestamp": chunk.get("timestamp", ""),
+        "last_updated": chunk.get("last_updated", ""),
+        "content_hash": chunk.get("content_hash", ""),
+    }
+
+
 # ══════════════════════════════════════════════════════════
 #  LOAD & EMBED
 # ══════════════════════════════════════════════════════════
 
 def load_knowledge() -> int:
     global _collection
-    with _load_lock:
-        load_start = time.perf_counter()
-        _index_state.update({"status": "syncing", "last_error": None})
+    load_start = time.perf_counter()
+    _index_state.update({"status": "syncing", "last_error": None})
+    shadow_name = None
+    backup_name = None
 
-        try:
-            from connectors.github import get_github_chunks
-            from connectors.linkedin import get_linkedin_chunks
-            from connectors.portfolio import get_portfolio_chunks
+    try:
+        from connectors.github import get_github_chunks
+        from connectors.linkedin import get_linkedin_chunks
+        from connectors.portfolio import get_portfolio_chunks
 
-            portfolio_chunks = get_portfolio_chunks()
-            github_chunks = get_github_chunks()
-            linkedin_chunks = get_linkedin_chunks(KNOWLEDGE_DIR)
+        portfolio_chunks = get_portfolio_chunks()
+        github_chunks = get_github_chunks()
+        linkedin_chunks = get_linkedin_chunks(KNOWLEDGE_DIR)
 
-            fallback_chunks = []
-            if not portfolio_chunks:
-                logger.warning("Live portfolio fetch failed; using bundled fallback content")
-                for path in sorted(KNOWLEDGE_DIR.glob("*.md")):
-                    fallback_chunks.extend(
-                        _chunk_markdown(path.read_text(encoding="utf-8"), path.name)
-                    )
+        fallback_chunks = []
+        if not portfolio_chunks:
+            logger.warning("Live portfolio fetch failed; using bundled fallback content")
+            for path in sorted(KNOWLEDGE_DIR.glob("*.md")):
+                fallback_chunks.extend(
+                    _chunk_markdown(path.read_text(encoding="utf-8"), path.name)
+                )
 
-            # IDs are the database primary key. Last duplicate wins deterministically.
-            chunk_map = {
-                chunk["id"]: chunk
-                for chunk in portfolio_chunks + github_chunks + linkedin_chunks + fallback_chunks
-                if chunk.get("id") and chunk.get("text", "").strip()
-            }
-            all_chunks = list(chunk_map.values())
-            if not all_chunks:
-                raise RuntimeError("No public portfolio sources could be indexed")
+        normalized_chunks = _standardize_chunks(
+            portfolio_chunks + github_chunks + linkedin_chunks + fallback_chunks
+        )
+        chunk_map = {
+            chunk["id"]: chunk
+            for chunk in normalized_chunks
+            if chunk.get("id") and chunk.get("text", "").strip()
+        }
+        all_chunks = list(chunk_map.values())
+        if not all_chunks:
+            raise RuntimeError("No public portfolio sources could be indexed")
 
-            texts = [chunk["text"].strip() for chunk in all_chunks]
-            metadatas = [{
-                "source": chunk.get("source", "unknown"),
-                "heading": chunk.get("heading", ""),
-                "title": chunk.get("title", "Unknown"),
-                "type": chunk.get("type", "unknown"),
-                "url": chunk.get("url", "/"),
-                "source_type": chunk.get("source_type", "portfolio"),
-                "content_type": chunk.get("content_type", "unknown"),
-                "visibility": chunk.get("visibility", "public"),
-                "trust_level": chunk.get("trust_level", "verified"),
-                "timestamp": chunk.get("timestamp", ""),
-                "last_updated": chunk.get("last_updated", ""),
-            } for chunk in all_chunks]
-            embeddings = _embedder.encode(
-                texts, show_progress_bar=False, normalize_embeddings=True
-            ).tolist()
+        texts = [chunk["text"].strip() for chunk in all_chunks]
+        metadatas = [_metadata_for(chunk) for chunk in all_chunks]
+        embeddings = _embedder.encode(
+            texts, show_progress_bar=False, normalize_embeddings=True
+        ).tolist()
 
-            try:
-                _client.delete_collection(COLLECTION_NAME)
-            except Exception:
-                pass
-            _collection = _client.get_or_create_collection(
-                COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+        # Readers continue using the live collection while sources and embeddings
+        # are prepared. The short mutation window below is serialized.
+        with _index_lock:
+            suffix = uuid.uuid4().hex[:10]
+            shadow_name = f"{COLLECTION_NAME}_shadow_{suffix}"
+            backup_name = f"{COLLECTION_NAME}_backup_{suffix}"
+            shadow = _client.create_collection(
+                shadow_name, metadata={"hnsw:space": "cosine"}
             )
-            _collection.add(
+            shadow.add(
                 ids=list(chunk_map),
                 documents=texts,
                 embeddings=embeddings,
                 metadatas=metadatas,
             )
+            if shadow.count() != len(all_chunks):
+                raise RuntimeError("Shadow index validation failed")
 
-            _index_state.update({
-                "status": "ready",
-                "chunks": len(all_chunks),
-                "live_portfolio_chunks": len(portfolio_chunks),
-                "github_chunks": len(github_chunks),
-                "fallback_chunks": len(fallback_chunks),
-                "last_sync": int(time.time()),
-            })
-            logger.info(
-                "[RAG] Indexed %d chunks in %.2fs",
-                len(all_chunks), time.perf_counter() - load_start,
-            )
-            return len(all_chunks)
-        except Exception as exc:
-            _index_state.update({"status": "error", "last_error": str(exc)[:300]})
-            logger.exception("[RAG] Index refresh failed")
-            return _collection.count()
+            previous = _collection
+            previous.modify(name=backup_name)
+            try:
+                shadow.modify(name=COLLECTION_NAME)
+            except Exception:
+                previous.modify(name=COLLECTION_NAME)
+                raise
+            _collection = shadow
+            try:
+                _client.delete_collection(backup_name)
+            except Exception as exc:
+                logger.warning("Could not remove previous RAG collection: %s", exc)
+
+        _index_state.update({
+            "status": "ready",
+            "chunks": len(all_chunks),
+            "live_portfolio_chunks": len(portfolio_chunks),
+            "github_chunks": len(github_chunks),
+            "fallback_chunks": len(fallback_chunks),
+            "last_sync": int(time.time()),
+        })
+        logger.info(
+            "[RAG] Atomically indexed %d chunks in %.2fs",
+            len(all_chunks), time.perf_counter() - load_start,
+        )
+        return len(all_chunks)
+    except Exception as exc:
+        if shadow_name:
+            try:
+                _client.delete_collection(shadow_name)
+            except Exception:
+                pass
+        _index_state.update({"status": "error", "last_error": str(exc)[:300]})
+        logger.exception("[RAG] Index refresh failed")
+        try:
+            with _index_lock:
+                return _collection.count()
+        except Exception:
+            return 0
 
 
 # ══════════════════════════════════════════════════════════
@@ -275,21 +361,20 @@ def get_relevant_context(query: str, top_k: int | None = None) -> tuple[str, lis
       2. List of source dictionaries for UI
       3. Best (lowest) L2 distance score
     """
-    if _collection.count() == 0:
-        return "", [], 999.0
-
-    k = min(top_k or _resolve_top_k(query), _collection.count())
-    candidate_count = min(max(k * 3, RETRIEVAL_CANDIDATES), _collection.count())
-
     query_embedding = _embedder.encode(
         [query], normalize_embeddings=True
     ).tolist()
-
-    results = _collection.query(
-        query_embeddings = query_embedding,
-        n_results        = candidate_count,
-        include          = ["documents", "metadatas", "distances"],
-    )
+    with _index_lock:
+        collection_count = _collection.count()
+        if collection_count == 0:
+            return "", [], 999.0
+        k = min(top_k or _resolve_top_k(query), collection_count)
+        candidate_count = min(max(k * 3, RETRIEVAL_CANDIDATES), collection_count)
+        results = _collection.query(
+            query_embeddings=query_embedding,
+            n_results=candidate_count,
+            include=["documents", "metadatas", "distances"],
+        )
 
     docs      = results.get("documents", [[]])[0]
     metadatas = results.get("metadatas", [[]])[0]
@@ -327,19 +412,16 @@ def get_relevant_context(query: str, top_k: int | None = None) -> tuple[str, lis
     ranked.sort(key=lambda item: item[0])
 
     labeled_chunks = []
-    sources_map = {}
-    
-    best_distance = distances[0] if distances else 999.0
+    selected_sources = []
+    selected_distances = []
+    max_distance = float(os.getenv("RAG_MAX_DISTANCE", "0.68"))
 
     context_chars = 0
     chunks_per_title: dict[str, int] = {}
-    for _, dist, doc, meta in ranked:
+    for rerank_score, dist, doc, meta in ranked:
         if len(labeled_chunks) >= k:
             break
-        # Cosine distance above this is usually unrelated. Exact term matches
-        # remain eligible because repository names are important portfolio queries.
-        has_exact_term = any(term in doc.lower() for term in query_terms)
-        if dist > 0.72 and not has_exact_term:
+        if dist > max_distance:
             continue
             
         source  = meta.get("source", "unknown")
@@ -355,7 +437,9 @@ def get_relevant_context(query: str, top_k: int | None = None) -> tuple[str, lis
         trust_level = meta.get("trust_level", "verified")
         
         # Hard grounding constraint: Only allow verified or public sources
-        if visibility != "public" or trust_level not in ("verified", "public", "user_provided"):
+        if visibility != "public" or trust_level not in (
+            "verified", "public", "user_provided", "untrusted_external"
+        ):
             continue
             
         timestamp = meta.get("timestamp", "")
@@ -366,26 +450,26 @@ def get_relevant_context(query: str, top_k: int | None = None) -> tuple[str, lis
         if context_chars + len(labeled) > MAX_CONTEXT_CHARS:
             continue
         labeled_chunks.append(labeled)
+        selected_distances.append(dist)
         context_chars += len(labeled)
         chunks_per_title[title] = chunks_per_title.get(title, 0) + 1
-        
-        if title not in sources_map:
-            sources_map[title] = {
-                "title": title,
-                "type": m_type,
-                "url": url,
-                "source_type": source_type,
-                "content_type": content_type,
-                "visibility": visibility,
-                "trust_level": trust_level,
-                "timestamp": timestamp,
-                "last_updated": last_updated
-            }
+        selected_sources.append({
+            "title": title,
+            "type": m_type,
+            "url": url,
+            "source_type": source_type,
+            "content_type": content_type,
+            "visibility": visibility,
+            "trust_level": trust_level,
+            "timestamp": timestamp,
+            "last_updated": last_updated,
+            "distance": dist,
+            "rerank_score": rerank_score,
+        })
 
     context = "\n\n---\n\n".join(labeled_chunks)
-    sources = list(sources_map.values())
-    
-    return context, sources, best_distance
+    best_distance = selected_distances[0] if selected_distances else 999.0
+    return context, selected_sources, best_distance
 
 
 # ══════════════════════════════════════════════════════════
@@ -398,48 +482,50 @@ def upsert_github_repo(repo_data: dict) -> bool:
         if repo_data.get("private"):
             logger.info("[RAG] Ignoring private GitHub repository webhook")
             return False
-        from connectors.github import format_repo_chunks, get_repo_details, GITHUB_USERNAME
+        from connectors.github import (
+            GITHUB_USERNAME,
+            format_repo_chunks,
+            get_installation_token,
+            get_repo_details,
+        )
         
         repo_name = repo_data.get("name")
+        if not repo_name:
+            return False
         owner = repo_data.get("owner", {}).get("login", GITHUB_USERNAME)
-        
-        # Need to fetch details since we're doing a deep sync
-        # Note: In a real webhook, we might want to pass the token in headers, but for now we'll fetch basic if public.
-        # To keep it simple, we just pass empty headers (works for public repos).
-        details = get_repo_details(repo_name, owner, headers={})
-        
-        chunks = format_repo_chunks(repo_data, details)
-        
-        # Delete existing chunks for this repo to avoid duplicates
-        delete_github_repo(repo_name)
-        
-        for chunk in chunks:
-            text = chunk["text"]
-            chunk_id = chunk["id"]
-            meta = {
-                "source": chunk.get("source", "unknown"),
-                "heading": chunk.get("heading", ""),
-                "title": chunk.get("title", "Unknown"),
-                "type": chunk.get("type", "unknown"),
-                "url": chunk.get("url", "/"),
-                "source_type": chunk.get("source_type", "portfolio"),
-                "content_type": chunk.get("content_type", "unknown"),
-                "visibility": chunk.get("visibility", "public"),
-                "trust_level": chunk.get("trust_level", "verified"),
-                "timestamp": chunk.get("timestamp", ""),
-                "last_updated": chunk.get("last_updated", "")
-            }
-            
-            embedding = _embedder.encode(
-                [text], show_progress_bar=False, normalize_embeddings=True
-            ).tolist()[0]
-                
+        headers = {"Accept": "application/vnd.github.v3+json"}
+        token = get_installation_token()
+        if token:
+            headers["Authorization"] = f"token {token}"
+        details = get_repo_details(repo_name, owner, headers=headers)
+        chunks = _standardize_chunks(format_repo_chunks(repo_data, details))
+        if not chunks:
+            return False
+
+        ids = [chunk["id"] for chunk in chunks]
+        texts = [chunk["text"] for chunk in chunks]
+        metadatas = [_metadata_for(chunk) for chunk in chunks]
+        embeddings = _embedder.encode(
+            texts, show_progress_bar=False, normalize_embeddings=True
+        ).tolist()
+
+        with _index_lock:
+            existing = _collection.get(where={"title": repo_name}, include=[])
+            existing_ids = set(existing.get("ids", []))
             _collection.upsert(
-                ids=[chunk_id],
-                documents=[text],
-                embeddings=[embedding],
-                metadatas=[meta]
+                ids=ids,
+                documents=texts,
+                embeddings=embeddings,
+                metadatas=metadatas,
             )
+            stale_ids = list(existing_ids - set(ids))
+            if stale_ids:
+                _collection.delete(ids=stale_ids)
+            _index_state.update({
+                "chunks": _collection.count(),
+                "last_sync": int(time.time()),
+                "status": "ready",
+            })
             
         logger.info(f"[RAG] Upserted deep GitHub repo: {repo_name}")
         return True
@@ -450,7 +536,15 @@ def upsert_github_repo(repo_data: dict) -> bool:
 def delete_github_repo(repo_name: str) -> bool:
     """Deletes all chunks for a repository from ChromaDB."""
     try:
-        _collection.delete(where={"title": repo_name})
+        with _index_lock:
+            _collection.delete(where={"$and": [
+                {"title": repo_name},
+                {"source_type": "github"},
+            ]})
+            _index_state.update({
+                "chunks": _collection.count(),
+                "last_sync": int(time.time()),
+            })
                 
         logger.info(f"[RAG] Deleted GitHub repo chunks: {repo_name}")
         return True

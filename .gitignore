@@ -20,3 +20,5 @@ chroma.sqlite3
 *.token
 *.key
 *.pem
+*.p12
+credentials.json

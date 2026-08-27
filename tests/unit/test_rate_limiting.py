@@ -3,9 +3,14 @@ Unit tests for rate limiting functionality.
 """
 
 import pytest
-import time
+import hashlib
 from fastapi import HTTPException
 from main import check_rate_limit, _rate_store, RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW
+
+
+def store_key(ip, scope="chat"):
+    digest = hashlib.sha256(ip.encode("utf-8")).hexdigest()[:24]
+    return f"{scope}:{digest}"
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +46,7 @@ def test_rate_limit_blocks_over_threshold():
         check_rate_limit(ip)
     
     assert exc_info.value.status_code == 429
-    assert "Rate limit exceeded" in exc_info.value.detail
+    assert "Too many requests" in exc_info.value.detail
 
 
 def test_rate_limit_per_ip_isolation():
@@ -90,9 +95,10 @@ def test_rate_limit_stores_timestamps_correctly():
     check_rate_limit(ip)
     
     # Verify timestamp was recorded
-    assert ip in _rate_store
-    assert len(_rate_store[ip]) == 1
-    assert isinstance(_rate_store[ip][0], float)
+    key = store_key(ip)
+    assert key in _rate_store
+    assert len(_rate_store[key]) == 1
+    assert isinstance(_rate_store[key][0], float)
 
 
 def test_rate_limit_multiple_rapid_requests():
@@ -102,11 +108,11 @@ def test_rate_limit_multiple_rapid_requests():
     for i in range(10):
         check_rate_limit(ip)
     
-    assert len(_rate_store[ip]) == 10
+    assert len(_rate_store[store_key(ip)]) == 10
 
 
-def test_rate_limit_error_message_includes_limits():
-    """Verify error message shows rate limit details."""
+def test_rate_limit_error_message_is_generic():
+    """Do not expose internal limiter configuration."""
     ip = "8.8.8.8"
     
     for i in range(RATE_LIMIT_REQUESTS):
@@ -116,8 +122,7 @@ def test_rate_limit_error_message_includes_limits():
         check_rate_limit(ip)
     
     detail = exc_info.value.detail
-    assert str(RATE_LIMIT_REQUESTS) in detail
-    assert str(RATE_LIMIT_WINDOW) in detail
+    assert detail == "Too many requests. Please try again shortly."
 
 
 def test_rate_limit_edge_case_zero_requests():
@@ -143,4 +148,4 @@ def test_rate_limit_concurrent_ips():
     
     # Each IP should have 5 requests recorded
     for ip in ips:
-        assert len(_rate_store[ip]) == 5
+        assert len(_rate_store[store_key(ip)]) == 5
