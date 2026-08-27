@@ -19,6 +19,9 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: python -m pip install --upgrade pip
+      - run: >-
+          python -m pip install --no-deps
+          "https://download.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp311-cp311-manylinux_2_28_x86_64.whl#sha256=6746dbcbeb526eb61330b76b41ff1b4eb848951103a892eeb080dfa2b264667b"
       - run: python -m pip install --require-hashes -r requirements.lock
       - run: python -m pip install -r requirements-dev.txt pip-audit
       - run: pytest -q --no-cov

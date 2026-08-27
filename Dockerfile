@@ -10,6 +10,8 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 COPY --chown=user requirements.lock .
+RUN pip install --no-cache-dir --no-deps \
+    "https://download.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp311-cp311-manylinux_2_28_x86_64.whl#sha256=6746dbcbeb526eb61330b76b41ff1b4eb848951103a892eeb080dfa2b264667b"
 RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
