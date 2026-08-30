@@ -1,13 +1,3 @@
----
-title: Portfolio RAG API
-emoji: 🧠
-colorFrom: indigo
-colorTo: blue
-sdk: docker
-pinned: false
-license: mit
-short_description: Production-ready portfolio RAG and voice API
----
 
 # Hi frineds🤠 आप यहाँ पहुँच ही गए हैं...
 > [!TIP]
