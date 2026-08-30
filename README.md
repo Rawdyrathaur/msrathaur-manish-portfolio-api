@@ -1,3 +1,14 @@
+---
+title: Portfolio RAG API
+emoji: 🧠
+colorFrom: indigo
+colorTo: blue
+sdk: docker
+pinned: false
+license: mit
+short_description: Production-ready portfolio RAG and voice API
+---
+
 # Hi frineds🤠 आप यहाँ पहुँच ही गए हैं...
 > [!TIP]
 > ###  देखो भाई/बहन, मेरा पर्सनल डेटा कॉपी मत करना! वरना कोड में ऐसा 'Uncaught Bug' आएगा कि गूगल और ChatGPT भी हाथ खड़े कर देंगे! 🛑😂 अगर इस रिपोजिटरी को इस्तेमाल करना ही है, तो पहले पुराने डेटा सेट का पूरा 'Cache & Data Clear' (सफ़ाया) करो, फिर अपना नया लॉजिक चलाओ।
