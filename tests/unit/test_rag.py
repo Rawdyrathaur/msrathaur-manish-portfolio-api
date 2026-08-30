@@ -3,6 +3,7 @@ Unit tests for RAG system (knowledge chunking, embedding, retrieval).
 """
 
 import pytest
+import rag
 from rag import _chunk_markdown
 
 
@@ -130,3 +131,66 @@ More content"""
     # Should have split at ## but not # or ###
     assert len(chunks) >= 2
     assert any("Real Section" in chunk["text"] for chunk in chunks)
+
+
+def test_abstract_reasoning_questions_retrieve_broader_evidence():
+    assert rag._resolve_top_k("What are his strongest areas?") == rag.TOP_K_MAX
+    assert rag._resolve_top_k("Which project best demonstrates production engineering?") == rag.TOP_K_MAX
+    assert rag._resolve_top_k("Compare Tab Story and Carbon Pulse") == rag.TOP_K_MAX
+
+
+def test_multi_query_retrieval_fuses_and_deduplicates_candidates(monkeypatch):
+    class FakeEmbeddings(list):
+        def tolist(self):
+            return list(self)
+
+    class FakeEmbedder:
+        def encode(self, queries, normalize_embeddings=True):
+            assert len(queries) == 2
+            assert normalize_embeddings is True
+            return FakeEmbeddings([[0.1, 0.2], [0.2, 0.1]])
+
+    skill_meta = {
+        "source": "skills.md", "heading": "Backend", "title": "Skills",
+        "type": "skill", "url": "/", "source_type": "portfolio",
+        "content_type": "skills", "visibility": "public",
+        "trust_level": "verified", "timestamp": "", "last_updated": "",
+    }
+    project_meta = {
+        "source": "projects.md", "heading": "Carbon Pulse", "title": "Carbon Pulse",
+        "type": "project", "url": "/", "source_type": "portfolio",
+        "content_type": "project", "visibility": "public",
+        "trust_level": "verified", "timestamp": "", "last_updated": "",
+    }
+
+    class FakeCollection:
+        def count(self):
+            return 2
+
+        def query(self, **kwargs):
+            assert len(kwargs["query_embeddings"]) == 2
+            return {
+                "ids": [["skills", "project"], ["skills", "project"]],
+                "documents": [
+                    ["Java and backend APIs", "Microservices with Docker and Kafka"],
+                    ["Java and backend APIs", "Microservices with Docker and Kafka"],
+                ],
+                "metadatas": [[skill_meta, project_meta], [skill_meta, project_meta]],
+                "distances": [[0.69, 0.62], [0.41, 0.46]],
+            }
+
+    monkeypatch.setattr(rag, "_embedder", FakeEmbedder())
+    monkeypatch.setattr(rag, "_collection", FakeCollection())
+    context, sources, best_distance = rag.get_relevant_context(
+        "What are his strongest areas?",
+        top_k=2,
+        search_queries=[
+            "What are his strongest areas?",
+            "skills experience projects and demonstrated evidence",
+        ],
+    )
+
+    assert "Java and backend APIs" in context
+    assert "Microservices with Docker and Kafka" in context
+    assert len(sources) == 2
+    assert best_distance == 0.41

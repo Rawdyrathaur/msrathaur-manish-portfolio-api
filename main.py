@@ -41,6 +41,7 @@ from rag import (
 )
 from system_prompt import build_system_prompt
 from intent_router import classify_intent
+from query_understanding import build_retrieval_queries
 
 
 # ── Logging ───────────────────────────────────────────────
@@ -595,6 +596,16 @@ def retrieval_confidence(best_distance: float, sources: list[dict]) -> str:
     gap = (distances[1] - distances[0]) if len(distances) > 1 else 0.0
     if distances[0] <= 0.35 and agreement >= 2 and gap <= 0.18:
         return "high"
+    verified_sources = [
+        source for source in sources
+        if source.get("trust_level", "verified") in {"verified", "public"}
+    ]
+    distinct_evidence = {
+        (source.get("title"), source.get("content_type"))
+        for source in verified_sources
+    }
+    if distances[0] <= 0.68 and len(verified_sources) >= 3 and len(distinct_evidence) >= 2:
+        return "medium"
     if distances[0] <= 0.58:
         return "medium"
     return "low"
@@ -760,7 +771,11 @@ def chat(req: ChatRequest, request: Request):
     chunks_used = 0
 
     if intent in ["PORTFOLIO_QUERY", "FOLLOW_UP"]:
-        rag_context, sources, best_distance = get_relevant_context(req.message)
+        retrieval_queries = build_retrieval_queries(req.message, req.history)
+        rag_context, sources, best_distance = get_relevant_context(
+            req.message,
+            search_queries=retrieval_queries,
+        )
         chunks_used = len(sources)
         
         log_event(
@@ -768,6 +783,7 @@ def chat(req: ChatRequest, request: Request):
             request_id=getattr(request.state, "request_id", "unknown"),
             chunks=chunks_used,
             top_distance=round(best_distance, 4),
+            query_variants=len(retrieval_queries),
         )
 
         if not rag_context:

@@ -88,3 +88,14 @@ def test_behavior_rules_knowledge_scope():
     """Verify rules limit responses to Manish-related topics."""
     assert "Manish" in BEHAVIOR_RULES
     assert "knowledge" in BEHAVIOR_RULES.lower() or "skills" in BEHAVIOR_RULES.lower()
+
+
+def test_prompt_allows_bounded_evidence_synthesis():
+    assert "REASONED SYNTHESIS" in BEHAVIOR_RULES
+    assert "INFERENCE BOUNDARY" in BEHAVIOR_RULES
+    assert "concrete projects" in BEHAVIOR_RULES
+
+
+def test_prompt_prevents_repository_metadata_from_polluting_project_stack():
+    assert "incidental repository languages" in BEHAVIOR_RULES
+    assert "verified portfolio descriptions" in BEHAVIOR_RULES

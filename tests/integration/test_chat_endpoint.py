@@ -137,7 +137,7 @@ def test_chat_all_providers_fail_returns_grounded_fallback(client, monkeypatch):
     monkeypatch.setattr("main.try_together", lambda msgs: None)
     monkeypatch.setattr(
         "main.get_relevant_context",
-        lambda msg: ("[Source: Projects]\nManish built Tab Story.", [], 0.2),
+        lambda msg, **kwargs: ("[Source: Projects]\nManish built Tab Story.", [], 0.2),
     )
     
     response = client.post("/chat", json={
@@ -157,7 +157,7 @@ def test_chat_extracts_rag_context(client, monkeypatch):
     # Mock get_relevant_context to return specific chunks
     monkeypatch.setattr(
         "main.get_relevant_context",
-        lambda msg: (
+        lambda msg, **kwargs: (
             "Chunk 1\n\n---\n\nChunk 2",
             [{"distance": 0.2}, {"distance": 0.25}],
             0.2,
@@ -172,6 +172,43 @@ def test_chat_extracts_rag_context(client, monkeypatch):
     
     assert response.status_code == 200
     assert response.json()["chunks_used"] >= 1
+
+
+def test_follow_up_retrieval_keeps_previous_user_topic(client, monkeypatch):
+    captured = {}
+
+    def fake_retrieval(message, **kwargs):
+        captured["queries"] = kwargs["search_queries"]
+        return (
+            "[Source: Experience]\nOrganic Maps contribution details.",
+            [{"distance": 0.3}],
+            0.3,
+        )
+
+    monkeypatch.setattr("main.get_relevant_context", fake_retrieval)
+    monkeypatch.setattr("main.try_groq", lambda msgs: "Grounded follow-up")
+
+    response = client.post("/chat", json={
+        "message": "Tell me more about that and why it matters.",
+        "history": [
+            {"role": "user", "content": "What open-source work has Manish done?"},
+            {"role": "assistant", "content": "He contributed to Organic Maps."},
+        ],
+    })
+
+    assert response.status_code == 200
+    assert any("What open-source work" in query for query in captured["queries"])
+
+
+def test_abstract_question_confidence_uses_multiple_verified_evidence_items():
+    from main import retrieval_confidence
+
+    sources = [
+        {"distance": 0.62, "title": "Skills", "content_type": "skills", "trust_level": "verified"},
+        {"distance": 0.65, "title": "Projects", "content_type": "project", "trust_level": "verified"},
+        {"distance": 0.67, "title": "Experience", "content_type": "experience", "trust_level": "verified"},
+    ]
+    assert retrieval_confidence(0.62, sources) == "medium"
 
 
 def test_untrusted_page_context_strips_instruction_lines():

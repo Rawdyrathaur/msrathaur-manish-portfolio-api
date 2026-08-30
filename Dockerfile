@@ -20,6 +20,7 @@ COPY --chown=user main.py .
 COPY --chown=user rag.py .
 COPY --chown=user system_prompt.py .
 COPY --chown=user intent_router.py .
+COPY --chown=user query_understanding.py .
 COPY --chown=user connectors/ ./connectors/
 COPY --chown=user knowledge/ ./knowledge/
 

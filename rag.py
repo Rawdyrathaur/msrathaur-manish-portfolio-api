@@ -10,6 +10,7 @@ from pathlib import Path
 
 import chromadb
 from sentence_transformers import SentenceTransformer
+from query_understanding import build_retrieval_queries
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ CACHE_DIR       = Path(os.getenv("RAG_CACHE_DIR", "/tmp/manish-portfolio-rag"))
 PERSIST_DIR     = CACHE_DIR / "chroma"
 MANIFEST_PATH   = CACHE_DIR / "manifest.json"
 
-# TOP_K is adaptive — simple questions get 3, broad questions get 7
+# TOP_K is adaptive so analytical questions receive broader evidence.
 TOP_K_DEFAULT = 5
 TOP_K_MAX     = 12
 RETRIEVAL_CANDIDATES = 50
@@ -340,7 +341,9 @@ _BROAD_KEYWORDS = {
     "everything", "all", "tell me about", "overview", "summary",
     "who is", "what does", "background", "skills", "experience",
     "projects", "work", "journey", "full", "complete",
-    "github", "repos", "repositories", "list",
+    "github", "repos", "repositories", "list", "strongest", "strengths",
+    "best demonstrates", "fit for", "suitable", "compare", "comparison",
+    "kind of engineer", "production engineering", "tell me more",
 }
 
 def _resolve_top_k(query: str) -> int:
@@ -354,15 +357,20 @@ def _resolve_top_k(query: str) -> int:
 #  RETRIEVE
 # ══════════════════════════════════════════════════════════
 
-def get_relevant_context(query: str, top_k: int | None = None) -> tuple[str, list[dict], float]:
+def get_relevant_context(
+    query: str,
+    top_k: int | None = None,
+    search_queries: list[str] | None = None,
+) -> tuple[str, list[dict], float]:
     """
     Returns:
       1. Formatted context string for LLM
       2. List of source dictionaries for UI
       3. Best (lowest) L2 distance score
     """
-    query_embedding = _embedder.encode(
-        [query], normalize_embeddings=True
+    semantic_queries = list(dict.fromkeys(search_queries or build_retrieval_queries(query)))
+    query_embeddings = _embedder.encode(
+        semantic_queries, normalize_embeddings=True
     ).tolist()
     with _index_lock:
         collection_count = _collection.count()
@@ -371,43 +379,116 @@ def get_relevant_context(query: str, top_k: int | None = None) -> tuple[str, lis
         k = min(top_k or _resolve_top_k(query), collection_count)
         candidate_count = min(max(k * 3, RETRIEVAL_CANDIDATES), collection_count)
         results = _collection.query(
-            query_embeddings=query_embedding,
+            query_embeddings=query_embeddings,
             n_results=candidate_count,
             include=["documents", "metadatas", "distances"],
         )
 
-    docs      = results.get("documents", [[]])[0]
-    metadatas = results.get("metadatas", [[]])[0]
-    distances = results.get("distances", [[]])[0]
+    result_ids = results.get("ids", [])
+    result_docs = results.get("documents", [])
+    result_metadatas = results.get("metadatas", [])
+    result_distances = results.get("distances", [])
+    candidates: dict[str, dict] = {}
+    for query_index, docs in enumerate(result_docs):
+        ids = result_ids[query_index] if query_index < len(result_ids) else []
+        metadatas = (
+            result_metadatas[query_index]
+            if query_index < len(result_metadatas) else []
+        )
+        distances = (
+            result_distances[query_index]
+            if query_index < len(result_distances) else []
+        )
+        for rank, (doc, meta, distance) in enumerate(zip(docs, metadatas, distances)):
+            candidate_id = (
+                ids[rank] if rank < len(ids)
+                else hashlib.sha256(doc.encode("utf-8")).hexdigest()
+            )
+            candidate = candidates.setdefault(candidate_id, {
+                "doc": doc,
+                "meta": meta,
+                "distance": float(distance),
+                "rrf": 0.0,
+                "query_hits": set(),
+            })
+            if float(distance) < candidate["distance"]:
+                candidate.update({"doc": doc, "meta": meta, "distance": float(distance)})
+            candidate["rrf"] += 1.0 / (60 + rank + 1)
+            candidate["query_hits"].add(query_index)
 
-    if not docs:
+    if not candidates:
         return "", [], 999.0
 
+    lexical_query = " ".join(semantic_queries[:2])
+    semantic_query = " ".join(semantic_queries).lower()
     query_terms = {
-        token for token in re.findall(r"[a-z0-9+#.-]{2,}", query.lower())
-        if token not in {"what", "which", "about", "tell", "manish", "does", "have", "with"}
+        token for token in re.findall(r"[a-z0-9+#.-]{2,}", lexical_query.lower())
+        if token not in {
+            "what", "which", "about", "tell", "manish", "does", "have",
+            "with", "that", "this", "more", "his", "him", "the", "and",
+        }
     }
     ranked = []
     category_sources = {
-        "project": "projects",
-        "skill": "skills",
-        "experience": "experience",
-        "blog": "blog",
-        "article": "blog",
-        "contact": "contact",
+        "project": ("projects", "github"),
+        "skill": ("skills",),
+        "strongest": ("skills", "experience", "projects"),
+        "strength": ("skills", "experience", "projects"),
+        "backend": ("skills", "projects", "experience"),
+        "production": ("projects", "skills", "experience"),
+        "engineer": ("about", "skills", "experience", "projects"),
+        "fit": ("skills", "experience", "projects"),
+        "experience": ("experience",),
+        "open-source": ("experience", "projects"),
+        "blog": ("blog",),
+        "article": ("blog",),
+        "contact": ("contact",),
     }
-    for doc, meta, distance in zip(docs, metadatas, distances):
+    preferred_sources: set[str] = set()
+    source_preferences = {
+        "strongest": {"skills", "experience", "projects", "about"},
+        "strength": {"skills", "experience", "projects", "about"},
+        "expertise": {"skills", "experience", "projects", "about"},
+        "kind of engineer": {"skills", "experience", "projects", "about"},
+        "fit": {"skills", "experience", "projects"},
+        "backend": {"skills", "experience", "projects"},
+        "production": {"skills", "experience", "projects"},
+        "compare": {"projects", "github"},
+        "open-source": {"experience", "projects", "github"},
+    }
+    for term, source_names in source_preferences.items():
+        if term in semantic_query:
+            preferred_sources.update(source_names)
+
+    for candidate in candidates.values():
+        doc = candidate["doc"]
+        meta = candidate["meta"]
+        distance = candidate["distance"]
         haystack = f"{meta.get('title', '')} {meta.get('heading', '')} {doc}".lower()
         overlap = sum(1 for term in query_terms if term in haystack)
-        score = float(distance) - (0.08 * overlap)
+        score = float(distance) - (0.07 * overlap)
+        score -= min(candidate["rrf"] * 1.5, 0.08)
+        score -= min(max(len(candidate["query_hits"]) - 1, 0) * 0.025, 0.05)
         source = meta.get("source", "").lower()
         if meta.get("source_type") == "portfolio_live":
-            score -= 0.10
-        for term, source_name in category_sources.items():
-            if term in query.lower() and source_name in source:
-                score -= 0.40
-        if "project" in query.lower() and meta.get("content_type") == "repo_overview":
+            score -= 0.12
+        elif meta.get("source_type") == "portfolio":
             score -= 0.08
+        if meta.get("trust_level") == "untrusted_external":
+            score += 0.08
+        category_match = any(
+            term in semantic_query and any(source_name in source for source_name in source_names)
+            for term, source_names in category_sources.items()
+        )
+        if category_match:
+            score -= 0.18
+        if preferred_sources:
+            if any(source_name in source for source_name in preferred_sources):
+                score -= 0.12
+            else:
+                score += 0.12
+        if "project" in semantic_query and meta.get("content_type") == "repo_overview":
+            score -= 0.05
         ranked.append((max(score, 0.0), float(distance), doc, meta))
     ranked.sort(key=lambda item: item[0])
 
@@ -415,19 +496,25 @@ def get_relevant_context(query: str, top_k: int | None = None) -> tuple[str, lis
     selected_sources = []
     selected_distances = []
     max_distance = float(os.getenv("RAG_MAX_DISTANCE", "0.68"))
+    effective_max_distance = max_distance + (0.04 if len(semantic_queries) > 1 else 0.0)
 
     context_chars = 0
     chunks_per_title: dict[str, int] = {}
+    per_title_limit = 3 if k >= 8 else 2
     for rerank_score, dist, doc, meta in ranked:
         if len(labeled_chunks) >= k:
             break
-        if dist > max_distance:
+        if dist > effective_max_distance:
             continue
             
         source  = meta.get("source", "unknown")
         heading = meta.get("heading", "")
         title   = meta.get("title", source)
-        if chunks_per_title.get(title, 0) >= 2:
+        if preferred_sources and not any(
+            source_name in source.lower() for source_name in preferred_sources
+        ):
+            continue
+        if chunks_per_title.get(title, 0) >= per_title_limit:
             continue
         m_type  = meta.get("type", "unknown")
         url     = meta.get("url", "/")
@@ -468,7 +555,7 @@ def get_relevant_context(query: str, top_k: int | None = None) -> tuple[str, lis
         })
 
     context = "\n\n---\n\n".join(labeled_chunks)
-    best_distance = selected_distances[0] if selected_distances else 999.0
+    best_distance = min(selected_distances) if selected_distances else 999.0
     return context, selected_sources, best_distance
 
 

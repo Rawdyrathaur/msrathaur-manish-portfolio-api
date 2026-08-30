@@ -17,10 +17,13 @@ _PORTFOLIO_TERMS = {
     "resume", "cv", "contact", "email", "blog", "article", "articles", "open-source",
     "opensource", "technology", "technologies", "stack", "built", "contribution",
     "contributions", "organic maps", "kubestellar", "tab story", "carbon pulse",
-    "omnisupport", "availability", "hire", "developer",
+    "omnisupport", "availability", "hire", "developer", "engineer",
+    "backend", "frontend", "strength", "strongest", "expertise",
+    "production", "fit", "suitable", "candidate", "compare",
 }
 _FOLLOW_UP = re.compile(
-    r"\b(it|that|this|they|them|those|more|else|how|why|when|where|which one)\b",
+    r"\b(he|his|him|it|its|that|this|they|their|them|those|more|else|"
+    r"how|why|when|where|what about|how about|which one)\b",
     re.IGNORECASE,
 )
 _OFF_TOPIC = re.compile(

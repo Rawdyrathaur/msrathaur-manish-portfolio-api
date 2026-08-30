@@ -16,3 +16,12 @@ def test_follow_up_uses_history():
 
 def test_clear_off_topic_query_short_circuits():
     assert classify_intent("What is the weather in Paris?") == "OFF_TOPIC"
+
+
+def test_abstract_portfolio_reasoning_question_is_retrieved():
+    assert classify_intent("Which project best demonstrates production engineering?") == "PORTFOLIO_QUERY"
+
+
+def test_pronoun_based_follow_up_uses_history():
+    history = [type("Message", (), {"content": "Tell me about Manish"})()]
+    assert classify_intent("What are his strongest areas?", history) == "FOLLOW_UP"
